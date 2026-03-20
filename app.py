@@ -85,8 +85,6 @@ questions_db = {
 
 def create_question_image(q_code, text, font_size):
     line_count = text.count('\n') + 1
-    # Reduced base padding to tightly crop the white space IN the image
-    # 0.24 inches total gives roughly 0.3cm above and 0.3cm below the text
     base_padding = 0.24 
     height_per_line = font_size * 0.035 
     fig_height = base_padding + (line_count * height_per_line)
@@ -149,9 +147,7 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, q_labels, dynamic_areas
 
-# --- NEW: EXACT 0.3cm IMAGE SPACING ---
 def add_tight_picture(doc, img_path, width):
-    """Adds the picture with exactly 0.3cm space before and after."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_before = Cm(0.3)
     paragraph.paragraph_format.space_after = Cm(0.3)
@@ -296,23 +292,19 @@ if generate_clicked:
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
-                        # --- ZERO SPACING BEFORE HEADING ---
                         h_pers = doc.add_heading("Personal correction", 2)
                         h_pers.paragraph_format.space_before = Cm(0)
                         
                         for q in personal:
-                            # Automatically applies 0.3cm before and after
                             add_tight_picture(doc, q_images[q], width=personal_img_width)
 
                     doc.add_page_break()
                     
-                    # --- ZERO SPACING BEFORE HEADING ---
                     h_ret = doc.add_heading(f"Whole-class reteaching - {name}", 1)
                     h_ret.paragraph_format.space_before = Cm(0)
                     
                     if reteach:
                         for q in reteach: 
-                            # Automatically applies 0.3cm before and after
                             add_tight_picture(doc, q_images[q], width=reteach_img_width)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
@@ -320,7 +312,10 @@ if generate_clicked:
                 target = BytesIO()
                 doc.save(target)
                 st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
-                st.download_button("📥 Download Document", data=target.getvalue(), file_name=f"{unit_title.replace(' ', '_')}_Feedback.docx")
+                
+                # --- NEW: DYNAMIC FILE NAMING ---
+                final_file_name = f"{class_name.replace(' ', '_')}_{unit_title.replace(' ', '_')}_Feedback.docx"
+                st.download_button("📥 Download Document", data=target.getvalue(), file_name=final_file_name)
                 
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
