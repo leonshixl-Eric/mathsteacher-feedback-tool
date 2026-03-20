@@ -1,4 +1,5 @@
 import sys
+import re  # <-- NEW: Smart text scanner to read "1a, b" properly
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
@@ -86,30 +87,56 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
-# --- 3. BULLETPROOF DATA PROCESSING ---
+# --- 3. SMART DATA PROCESSING ---
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
     percentage_row = df_marks.iloc[34]
     q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-    df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
+    # Force header=None so we don't swallow the first row
+    df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
+    
+    # If the file actually had a header row, gracefully skip it
+    first_cell = str(df_map.iloc[0, 0]).lower()
+    if 'topic' in first_cell or 'area' in first_cell or 'module' in first_cell:
+        df_map = df_map.iloc[1:].reset_index(drop=True)
+
     dynamic_areas = []
     
     for _, map_row in df_map.iterrows():
-        topic = str(map_row.iloc[0])
+        if pd.isna(map_row.iloc[0]): continue
+        topic = str(map_row.iloc[0]).strip()
+        raw_qs = str(map_row.iloc[1]).lower()
         
-        # BULLETPROOF FIX: Convert to lowercase, remove ALL spaces, and handle weird newlines
-        raw_qs = str(map_row.iloc[1]).replace('\n', ',').replace(' ', '').lower()
-        qs = raw_qs.split(',')
+        # Smart formatting fixes
+        raw_qs = re.sub(r'(\d)\s+([a-z])', r'\1\2', raw_qs) # "1 a" -> "1a"
+        raw_qs = re.sub(r'\band\b|&', ',', raw_qs) # "1a and b" -> "1a , b"
         
-        indices = []
-        for q in qs:
-            if q in q_labels:
-                indices.append(q_labels.index(q))
-                
-        dynamic_areas.append((topic, indices))
+        tokens = re.split(r'[,\s]+', raw_qs)
+        qs = []
+        last_num = ""
         
+        for token in tokens:
+            token = token.strip()
+            if not token: continue
+            
+            # Match things like "1a", "2", "10"
+            m1 = re.match(r'^(\d+)([a-z]*)$', token)
+            if m1:
+                last_num = m1.group(1)
+                if token in q_labels: qs.append(token)
+            else:
+                # Match isolated letters like "b"
+                m2 = re.match(r'^([a-z])$', token)
+                if m2 and last_num:
+                    combined = last_num + token
+                    if combined in q_labels: qs.append(combined)
+        
+        indices = [q_labels.index(q) for q in qs]
+        if indices:
+            dynamic_areas.append((topic, indices))
+            
     return student_rows, percentage_row, q_labels, dynamic_areas
 
 # --- 4. BUTTON LAYOUT ---
