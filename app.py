@@ -1,110 +1,87 @@
-import sys
-import matplotlib
-matplotlib.use('Agg') 
-import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
 import fitz  # PyMuPDF
 from docx import Document
 from docx.shared import Cm
+from PIL import Image, ImageChops
 import os
 from io import BytesIO
 
-# --- STEP 1: PYTHON 3.13 FIX ---
-try:
-    import imghdr
-except ImportError:
-    import filetype
-    class MockImghdr:
-        def what(self, file, h=None):
-            kind = filetype.guess(file)
-            return kind.extension if kind else None
-    sys.modules['imghdr'] = MockImghdr()
+st.set_page_config(page_title="Maths Feedback Automator", layout="centered")
 
-st.set_page_config(page_title="Dynamic Feedback Pro", layout="centered")
+st.title("📊 Universal Exam Feedback Tool")
+st.write("Upload your files. This version uses 'Smart-Crop' to capture perfect, tight snippets from the PDF.")
 
-st.title("📊 Dynamic Exam Feedback Generator")
-st.write("This app reads the PDF to extract text and reconstructs questions as clean images.")
-
-# --- STEP 2: THE THREE UPLOADERS ---
+# 1. THE THREE UPLOADERS
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
-def load_data(file):
-    if file.name.endswith('.csv'): return pd.read_csv(file, header=None)
-    else: return pd.read_excel(file, header=None)
+# Helper function to trim white space
+def trim_white_space(img_path):
+    im = Image.open(img_path)
+    bg = Image.new(im.mode, im.size, im.getpixel((0,0)))
+    diff = ImageChops.difference(im, bg)
+    diff = ImageChops.add(diff, diff, 2.0, -100)
+    bbox = diff.getbbox()
+    if bbox:
+        return im.crop(bbox)
+    return im
 
-def create_reconstructed_img(q_code, text):
-    # Determine height based on text length
-    line_count = text.count('\n') + 1
-    if len(text) > 100: line_count += 1
-    fig_height = 0.6 + (line_count * 0.45)
-    
-    plt.figure(figsize=(7, fig_height))
-    plt.text(0.01, 0.5, text, fontsize=12, verticalalignment='center', fontfamily='serif', wrap=True)
-    plt.axis('off')
-    plt.tight_layout(pad=0)
-    
-    img_name = f"recon_{q_code}.png"
-    plt.savefig(img_name, dpi=200, bbox_inches='tight')
-    plt.close()
-    return img_name
-
-# --- STEP 3: CORE GENERATOR ---
 if st.button("Generate Feedback Pack"):
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
-        st.error("Please upload all three files.")
+        st.error("Please upload all THREE files to proceed.")
     else:
         try:
-            with st.spinner('Reading PDF and reconstructing questions...'):
-                # 1. Load Marks & Mapping
-                df_marks = load_data(uploaded_csv)
+            with st.spinner('Smart-cropping questions from PDF...'):
+                # Load Data
+                df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
                 student_rows = df_marks.iloc[3:29].reset_index(drop=True)
                 percentage_row = df_marks.iloc[34]
                 q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-                df_map = load_data(uploaded_mapping)
-                if len(df_map.columns) < 2:
-                    # Handle cases where mapping might not have headers
-                    df_map = load_data(uploaded_mapping)
-                
-                # 2. Extract Text from PDF
+                # Process PDF
                 pdf_bytes = uploaded_pdf.read()
                 doc_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-                full_text = ""
-                for page in doc_pdf:
-                    full_text += page.get_text()
 
-                # 3. Dynamic Question Logic
-                # This part looks for the question text in the PDF based on the mapping
+                # The "Master List" of Question Coordinates (The real question parts)
+                # These coordinates are slightly taller to catch the instructions above.
+                crops = {
+                    "1a": (0, fitz.Rect(50, 105, 550, 185)), "1b": (0, fitz.Rect(50, 105, 550, 240)),
+                    "2a": (0, fitz.Rect(50, 260, 550, 360)), "2b": (0, fitz.Rect(50, 260, 550, 430)),
+                    "3a": (0, fitz.Rect(50, 460, 550, 560)), "3b": (0, fitz.Rect(50, 460, 550, 630)),
+                    "4a": (1, fitz.Rect(50, 80, 550, 200)),  "4b": (1, fitz.Rect(50, 80, 550, 300)),
+                    "5a": (1, fitz.Rect(50, 320, 550, 450)), "5b": (1, fitz.Rect(50, 320, 550, 580)),
+                    "6a": (1, fitz.Rect(50, 610, 550, 710)), "6b": (1, fitz.Rect(50, 610, 550, 780)),
+                    "7a": (2, fitz.Rect(50, 60, 550, 180)),  "7b": (2, fitz.Rect(50, 60, 550, 320)),
+                    "8a": (2, fitz.Rect(50, 360, 550, 480)), "8b": (2, fitz.Rect(50, 360, 550, 630)),
+                    "9a": (3, fitz.Rect(50, 70, 550, 230)),  "9b": (3, fitz.Rect(50, 70, 550, 380)),
+                    "10": (3, fitz.Rect(50, 410, 550, 680)) 
+                }
+
+                # Create Smart-Cropped Images
                 q_images = {}
+                for q, (pg, rect) in crops.items():
+                    pix = doc_pdf[pg].get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
+                    temp_path = f"raw_{q}.png"
+                    pix.save(temp_path)
+                    
+                    # Apply the "Smart-Crop" (Trim white space)
+                    trimmed_img = trim_white_space(temp_path)
+                    final_path = f"smart_{q}.png"
+                    trimmed_img.save(final_path)
+                    q_images[q] = final_path
+                    os.remove(temp_path)
+
+                # Process Mapping
+                df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
                 dynamic_areas = []
-                
                 for _, map_row in df_map.iterrows():
-                    topic = str(map_row.iloc[0])
-                    qs = str(map_row.iloc[1]).split(',')
-                    indices = []
-                    for q in qs:
-                        q_code = q.strip()
-                        if q_code in q_labels:
-                            indices.append(q_labels.index(q_code))
-                            # Attempt to find text for this question code in PDF
-                            # (Heuristic: search for "1a)" or "1 a)")
-                            search_term = f"{q_code})"
-                            if q_code not in q_images:
-                                # We extract a snippet of text around the question label
-                                start_idx = full_text.find(search_term)
-                                if start_idx != -1:
-                                    # Take the next 300 characters as the question
-                                    excerpt = full_text[start_idx:start_idx+300].split('\n\n')[0]
-                                    q_images[q_code] = create_reconstructed_img(q_code, excerpt)
-                                else:
-                                    # Fallback if text not found
-                                    q_images[q_code] = create_reconstructed_img(q_code, f"Question {q_code}")
+                    topic, qs = str(map_row.iloc[0]), str(map_row.iloc[1]).split(',')
+                    indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
                     dynamic_areas.append((topic, indices))
 
-                # 4. Build Document
+                # Build Doc
                 doc = Document()
                 for section in doc.sections:
                     section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
@@ -125,13 +102,10 @@ if st.button("Generate Feedback Pack"):
                         w, e = [], []
                         for idx in idxs:
                             score = pd.to_numeric(row[idx], errors='coerce')
-                            q_code = q_labels[idx]
-                            if score > 0: w.append(q_code)
-                            else:
-                                e.append(q_code)
-                                student_ebi.append(q_code)
+                            if score > 0: w.append(q_labels[idx])
+                            else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
                         r = table.add_row().cells
-                        r[0].text, r[1].text, r[2].text = title, ", ".join(w), ", ".join(e)
+                        r[0].text, r[1].text, r[2].text = str(title), ", ".join(w), ", ".join(e)
 
                     reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= 0.55]
                     personal = [q for q in student_ebi if q not in reteach]
@@ -148,16 +122,14 @@ if st.button("Generate Feedback Pack"):
                             doc.add_paragraph()
                     doc.add_page_break()
 
-                # 5. Output
-                target = BytesIO()
-                doc.save(target)
-                st.success("✅ Success!")
-                st.download_button("📥 Download Feedback Pack", data=target.getvalue(), file_name="Dynamic_Feedback.docx")
+                target = BytesIO(); doc.save(target)
+                st.success("✅ Document Ready!")
+                st.download_button("📥 Download Feedback Pack", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
                 # Cleanup
                 doc_pdf.close()
                 for f in os.listdir():
-                    if f.startswith("recon_") and f.endswith(".png"): os.remove(f)
+                    if f.startswith("smart_") and f.endswith(".png"): os.remove(f)
 
         except Exception as e:
             st.error(f"Error: {e}")
