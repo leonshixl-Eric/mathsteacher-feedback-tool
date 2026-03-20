@@ -23,15 +23,14 @@ except ImportError:
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting.")
+st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting at Size 11.")
 
 # --- 1. THE THREE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
-# --- 2. THE RECONSTRUCTION ENGINE (Perfect Math Formatting) ---
-# This ensures the full instruction AND the question are drawn perfectly.
+# --- 2. THE RECONSTRUCTION ENGINE ---
 questions_db = {
     "1a": r"Write each number as a power of 10." + "\n" + r"1a) 1000",
     "1b": r"Write each number as a power of 10." + "\n" + r"1b) 0.01",
@@ -58,12 +57,14 @@ questions_db = {
 }
 
 def create_question_image(q_code, text):
-    """Draws the text perfectly with adaptive height."""
+    """Draws the text perfectly with adaptive height and exact font size 11."""
     line_count = text.count('\n') + 1
-    fig_height = 0.5 + (line_count * 0.4) # Adapts to fit full instructions
+    # Adjusted height multiplier slightly for size 11 font to keep the crop tight
+    fig_height = 0.4 + (line_count * 0.35) 
     
     plt.figure(figsize=(7, fig_height))
-    plt.text(0.01, 0.5, text, fontsize=12, verticalalignment='center', fontfamily='serif')
+    # Font size explicitly set to 11 here
+    plt.text(0.01, 0.5, text, fontsize=11, verticalalignment='center', fontfamily='serif')
     plt.axis('off')
     plt.tight_layout(pad=0)
     
@@ -78,14 +79,12 @@ if st.button("Generate Feedback Pack"):
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner('Reconstructing perfect questions and building report...'):
-                # Read Marks
+            with st.spinner('Reconstructing size 11 questions and building report...'):
                 df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
                 student_rows = df_marks.iloc[3:29].reset_index(drop=True)
                 percentage_row = df_marks.iloc[34]
                 q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-                # Read Mapping
                 df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
                 dynamic_areas = []
                 for _, map_row in df_map.iterrows():
@@ -93,12 +92,12 @@ if st.button("Generate Feedback Pack"):
                     indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
                     dynamic_areas.append((topic, indices))
 
-                # Generate Images (No more screenshots!)
+                # Generate Images
                 q_images = {q: create_question_image(q, txt) for q, txt in questions_db.items()}
 
                 doc = Document()
                 for section in doc.sections:
-                    section.top_margin, section.bottom_margin = Cm(0.9), Cm(0.9)
+                    section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
                     section.left_margin, section.right_margin = Cm(0.9), Cm(0.9)
 
                 for _, row in student_rows.iterrows():
@@ -109,7 +108,7 @@ if st.button("Generate Feedback Pack"):
                     table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
-                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(14), Cm(1.25), Cm(1.25)
+                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(11), Cm(1.25), Cm(1.25)
                     
                     student_ebi = []
                     for title, idxs in dynamic_areas:
@@ -137,13 +136,11 @@ if st.button("Generate Feedback Pack"):
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
-                # Output
                 target = BytesIO()
                 doc.save(target)
                 st.success("✅ Feedback Pack Ready!")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
-                # Cleanup
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
 
