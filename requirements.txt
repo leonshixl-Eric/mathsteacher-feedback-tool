@@ -3,3 +3,4 @@ python-docx
 matplotlib
 streamlit
 openpyxl
+altair<5
