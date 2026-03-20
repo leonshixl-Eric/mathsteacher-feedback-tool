@@ -8,7 +8,6 @@ from docx import Document
 from docx.shared import Cm, Pt
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-# --- NEW: Import Zipfile and PowerPoint Font Tools ---
 from pptx import Presentation
 from pptx.util import Cm as PptxCm, Pt as PptxPt
 import zipfile
@@ -337,18 +336,13 @@ if generate_clicked:
                     if len(global_reteach_qs) > 0:
                         prs = Presentation()
                         for q in global_reteach_qs:
-                            slide = prs.slides.add_slide(prs.slide_layouts[5])
-                            title_shape = slide.shapes.title
-                            title_shape.text = f"Whole-Class Reteaching: Question {q}"
-                            
-                            # --- NEW: Force the title font to be exactly 32pt ---
-                            for paragraph in title_shape.text_frame.paragraphs:
-                                for run in paragraph.runs:
-                                    run.font.size = PptxPt(32)
+                            # --- NEW: Layout 6 is a completely "Blank" slide ---
+                            slide = prs.slides.add_slide(prs.slide_layouts[6])
                             
                             img_path = q_images[q]
                             pic_left = PptxCm(2)
-                            pic_top = PptxCm(4.5)
+                            # Moved the image up since there is no title taking up space
+                            pic_top = PptxCm(2.5) 
                             pic_width = PptxCm(21.4) 
                             
                             slide.shapes.add_picture(img_path, pic_left, pic_top, width=pic_width)
@@ -373,7 +367,6 @@ if generate_clicked:
                 # --- 4. SERVE DOWNLOAD BUTTONS ---
                 st.success(f"✅ Feedback Pack Ready!")
                 
-                # Show individual buttons and the ZIP button if PPT is generated
                 if generate_ppt and target_pptx is not None:
                     col_dl1, col_dl2, col_dl3 = st.columns(3)
                     with col_dl1:
