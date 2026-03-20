@@ -23,12 +23,25 @@ except ImportError:
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting at Size 11.")
+st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting.")
 
-# --- 1. THE THREE UPLOADERS ---
+# --- 1. THE UPLOADERS & SETTINGS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
-uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF", type="pdf")
+uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Reference)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
+
+st.markdown("---")
+st.subheader("⚙️ Document Settings")
+# Layout the settings side-by-side
+col_setting1, col_setting2 = st.columns(2)
+with col_setting1:
+    selected_font_size = st.slider("Select Question Font Size", min_value=10, max_value=14, value=11, step=1)
+with col_setting2:
+    # New Threshold Slider (converts to a decimal later)
+    selected_threshold = st.slider("Whole-Class Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
+st.markdown("---")
+
+threshold_decimal = selected_threshold / 100.0
 
 # --- 2. THE RECONSTRUCTION ENGINE ---
 questions_db = {
@@ -56,15 +69,14 @@ questions_db = {
           r"      Give your answer in standard form."
 }
 
-def create_question_image(q_code, text):
-    """Draws the text perfectly with adaptive height and exact font size 11."""
+def create_question_image(q_code, text, font_size):
     line_count = text.count('\n') + 1
-    # Adjusted height multiplier slightly for size 11 font to keep the crop tight
-    fig_height = 0.4 + (line_count * 0.35) 
+    base_padding = 0.3
+    height_per_line = font_size * 0.035 
+    fig_height = base_padding + (line_count * height_per_line)
     
     plt.figure(figsize=(7, fig_height))
-    # Font size explicitly set to 11 here
-    plt.text(0.01, 0.5, text, fontsize=11, verticalalignment='center', fontfamily='serif')
+    plt.text(0.01, 0.5, text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
     plt.axis('off')
     plt.tight_layout(pad=0)
     
@@ -73,42 +85,111 @@ def create_question_image(q_code, text):
     plt.close()
     return img_name
 
-# --- 3. CORE GENERATOR ---
-if st.button("Generate Feedback Pack"):
+# --- 3. HELPER TO PROCESS DATA ---
+def process_data(uploaded_csv, uploaded_mapping):
+    df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
+    student_rows = df_marks.iloc[3:29].reset_index(drop=True)
+    percentage_row = df_marks.iloc[34]
+    q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
+
+    df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
+    dynamic_areas = []
+    for _, map_row in df_map.iterrows():
+        topic, qs = str(map_row.iloc[0]), str(map_row.iloc[1]).split(',')
+        indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
+        dynamic_areas.append((topic, indices))
+        
+    return student_rows, percentage_row, q_labels, dynamic_areas
+
+# --- 4. BUTTON LAYOUT ---
+col1, col2 = st.columns(2)
+
+with col1:
+    preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
+with col2:
+    generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
+
+# --- 5. PREVIEW LOGIC ---
+if preview_clicked:
+    if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
+        st.warning("Please upload all three files to see a preview.")
+    else:
+        with st.spinner("Generating preview..."):
+            student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+            
+            # Find the first valid student
+            first_student = None
+            for _, row in student_rows.iterrows():
+                if str(row[0]) != 'nan' and str(row[0]) != 'Name':
+                    first_student = row
+                    break
+            
+            if first_student is not None:
+                name = str(first_student[0])
+                st.markdown(f"### 📋 Preview for: **{name}**")
+                
+                preview_table = []
+                student_ebi = []
+                for title, idxs in dynamic_areas:
+                    w, e = [], []
+                    for idx in idxs:
+                        score = pd.to_numeric(first_student[idx], errors='coerce')
+                        if score > 0: w.append(q_labels[idx])
+                        else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                    preview_table.append({"Area": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
+                
+                st.table(pd.DataFrame(preview_table))
+                
+                # Apply the Custom Threshold
+                reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+                personal = [q for q in student_ebi if q not in reteach]
+                
+                st.markdown("#### 🎯 Personal Corrections")
+                if personal:
+                    for q in personal:
+                        img_path = create_question_image(q, questions_db[q], selected_font_size)
+                        st.image(img_path)
+                        os.remove(img_path)
+                else:
+                    st.success("No personal corrections needed!")
+                
+                st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
+                if reteach:
+                    for q in reteach:
+                        img_path = create_question_image(q, questions_db[q], selected_font_size)
+                        st.image(img_path)
+                        os.remove(img_path)
+                else:
+                    st.success("No whole-class reteaching needed!")
+            else:
+                st.error("Could not find any valid students in the CSV.")
+
+# --- 6. GENERATE LOGIC ---
+if generate_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner('Reconstructing size 11 questions and building report...'):
-                df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
-                student_rows = df_marks.iloc[3:29].reset_index(drop=True)
-                percentage_row = df_marks.iloc[34]
-                q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
-
-                df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
-                dynamic_areas = []
-                for _, map_row in df_map.iterrows():
-                    topic, qs = str(map_row.iloc[0]), str(map_row.iloc[1]).split(',')
-                    indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
-                    dynamic_areas.append((topic, indices))
-
-                # Generate Images
-                q_images = {q: create_question_image(q, txt) for q, txt in questions_db.items()}
+            with st.spinner(f'Reconstructing questions at Size {selected_font_size} and building Word doc...'):
+                student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+                q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
                 doc = Document()
                 for section in doc.sections:
                     section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
-                    section.left_margin, section.right_margin = Cm(0.9), Cm(0.9)
+                    section.left_margin, section.right_margin = Cm(0.5), Cm(0.5)
 
                 for _, row in student_rows.iterrows():
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
                     doc.add_heading(f"Feedback Report: {name}", 1)
-                    table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
+                    table = doc.add_table(rows=1, cols=3)
+                    table.style = 'Table Grid'
+                    table.autofit = True
+                    
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
-                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(11), Cm(1.25), Cm(1.25)
                     
                     student_ebi = []
                     for title, idxs in dynamic_areas:
@@ -117,10 +198,12 @@ if st.button("Generate Feedback Pack"):
                             score = pd.to_numeric(row[idx], errors='coerce')
                             if score > 0: w.append(q_labels[idx])
                             else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                        
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = str(title), ", ".join(w), ", ".join(e)
 
-                    reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= 0.55]
+                    # Apply the Custom Threshold
+                    reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
@@ -138,7 +221,7 @@ if st.button("Generate Feedback Pack"):
 
                 target = BytesIO()
                 doc.save(target)
-                st.success("✅ Feedback Pack Ready!")
+                st.success(f"✅ Feedback Pack Ready (Font Size {selected_font_size}, Threshold {selected_threshold}%)!")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
                 for f in os.listdir():
