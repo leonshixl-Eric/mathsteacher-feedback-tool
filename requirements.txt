@@ -4,4 +4,4 @@ pymupdf
 matplotlib
 streamlit>=1.35.0
 openpyxl
-Pillow
+filetype
