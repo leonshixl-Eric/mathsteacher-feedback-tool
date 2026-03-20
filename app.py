@@ -5,7 +5,10 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
 from docx import Document
-from docx.shared import Cm
+# NEW: Import necessary WordML formatting tools
+from docx.shared import Cm, Pt
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 import os
 from io import BytesIO
 
@@ -86,7 +89,6 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
-# --- 3. MULTI-COLUMN DATA PROCESSING ---
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
@@ -107,12 +109,10 @@ def process_data(uploaded_csv, uploaded_mapping):
         qs = []
         last_num = ""
         
-        # NEW: Loop through ALL columns in the row after the Topic column
         for col_idx in range(1, len(map_row)):
             cell_val = map_row.iloc[col_idx]
             if pd.isna(cell_val): continue
             
-            # Clean up the cell (e.g. "1a", " 1 b ", or "1a, 1b")
             raw_str = str(cell_val).lower().replace('and', ',').replace('&', ',')
             raw_str = "".join(raw_str.split())
             tokens = raw_str.split(',')
@@ -137,14 +137,42 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, q_labels, dynamic_areas
 
-# --- 4. BUTTON LAYOUT ---
+# NEW FORMATTING HELPERS
+def add_tight_picture(doc, img_path, width):
+    """Adds a picture in its own paragraph with ZERO space after it."""
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_after = Cm(0)
+    paragraph.paragraph_format.space_before = Cm(0)
+    run = paragraph.add_run()
+    run.add_picture(img_path, width=width)
+    return paragraph
+
+def add_spacer(doc, height_cm):
+    """Adds a paragraph forced to have exactly the specified height (the gap)."""
+    paragraph = doc.add_paragraph()
+    # Lock the exact height using WordprocessingML formatting
+    paragraph.paragraph_format.space_before = Cm(0)
+    paragraph.paragraph_format.space_after = Cm(0)
+    
+    # Access internal XML for precise font height control
+    p_format = paragraph.paragraph_format
+    run = paragraph.add_run()
+    run.font.size = Pt(1) # Make font tiny so it doesn't affect space
+    
+    # Define exact line height (Word treats 12pt font as ~0.42cm usually)
+    # 0.5cm is approximately 14.17 points.
+    line_spacing_pts = height_per_line_in_pts = height_cm * 28.35
+    p_format.line_spacing = Pt(line_spacing_pts)
+    p_format.line_spacing_rule = 3 # Exact line spacing rule
+
+# --- 3. BUTTON LAYOUT ---
 col1, col2 = st.columns(2)
 with col1:
     preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
 with col2:
     generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
 
-# --- 5. PREVIEW LOGIC (WITH DEBUGGER) ---
+# --- 4. PREVIEW LOGIC ---
 if preview_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.warning("Please upload all three files to see a preview.")
@@ -203,13 +231,13 @@ if preview_clicked:
             else:
                 st.error("Could not find any valid students in the CSV.")
 
-# --- 6. GENERATE LOGIC ---
+# --- 5. GENERATE LOGIC ---
 if generate_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions and applying {selected_margin}cm margins...'):
+            with st.spinner(f'Reconstructing questions and applying exact 0.5cm image gaps...'):
                 student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
@@ -258,22 +286,31 @@ if generate_clicked:
                     reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal = [q for q in student_ebi if q not in reteach]
                     
+                    # --- APPLIYNG IMAGE SPACING (PERSONAL) ---
                     if personal:
                         doc.add_heading("Personal correction", 2)
-                        for q in personal: doc.add_picture(q_images[q], width=personal_img_width)
+                        for q in personal:
+                            # 1. Add picture in a ZERO-SPACE paragraph
+                            add_tight_picture(doc, q_images[q], width=personal_img_width)
+                            # 2. Add an EXACT 0.5cm spacer
+                            add_spacer(doc, 0.5)
 
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
+                    
+                    # --- APPLIYNG IMAGE SPACING (RETEACH) ---
                     if reteach:
                         for q in reteach: 
-                            doc.add_picture(q_images[q], width=reteach_img_width)
-                            doc.add_paragraph()
+                            # 1. Add picture in a ZERO-SPACE paragraph
+                            add_tight_picture(doc, q_images[q], width=reteach_img_width)
+                            # 2. Add an EXACT 0.5cm spacer
+                            add_spacer(doc, 0.5)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
                 target = BytesIO()
                 doc.save(target)
-                st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
+                st.success(f"✅ Feedback Pack Ready! (Exact image gaps: 0.5cm)")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
                 for f in os.listdir():
