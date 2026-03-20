@@ -32,7 +32,7 @@ uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Reference)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
-# --- NEW: BRANDING SETTINGS ---
+# --- BRANDING SETTINGS ---
 st.markdown("---")
 st.subheader("📝 Document Branding")
 col_brand1, col_brand2 = st.columns(2)
@@ -190,13 +190,13 @@ if preview_clicked:
             if first_student is not None:
                 name = str(first_student[0])
                 
-                # Show Logo in Preview if uploaded
-                if uploaded_logo is not None:
-                    st.image(uploaded_logo, width=150)
-                
-                # Show Custom Titles in Preview
-                st.markdown(f"### 📋 {unit_title} Feedback: **{name}**")
-                st.markdown(f"**Class:** {class_name}")
+                # Show Custom Titles in Preview (On one line with logo logic)
+                col_prev1, col_prev2 = st.columns([1, 8])
+                with col_prev1:
+                    if uploaded_logo is not None:
+                        st.image(uploaded_logo, width=50) # Small preview logo
+                with col_prev2:
+                    st.markdown(f"#### {unit_title} Feedback: **{name}** &nbsp; | &nbsp; Class: **{class_name}**")
                 
                 preview_table = []
                 student_ebi = []
@@ -240,7 +240,6 @@ if generate_clicked:
     else:
         try:
             with st.spinner(f'Reconstructing questions and applying {selected_margin}cm margins...'):
-                # 1. Temporarily save the logo to disk if it exists
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -269,16 +268,21 @@ if generate_clicked:
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
-                    # 2. Add the Logo to the top of the student's page
+                    # --- NEW INLINE HEADER LOGIC ---
+                    header_p = doc.add_paragraph()
+                    header_p.paragraph_format.space_after = Cm(0.3)
+                    
+                    # 1. Add Logo (Shrunk to 1.5cm)
                     if logo_path:
-                        doc.add_picture(logo_path, width=Cm(4.0))
+                        header_p.add_run().add_picture(logo_path, width=Cm(1.5))
+                        header_p.add_run("    ") # Add space after logo
                     
-                    # 3. Use the Custom Titles
-                    doc.add_heading(f"{unit_title} Feedback: {name}", 1)
-                    p = doc.add_paragraph()
-                    p.add_run(f"Class: ").bold = True
-                    p.add_run(f"{class_name}")
+                    # 2. Add Titles on the SAME LINE
+                    r_title = header_p.add_run(f"{unit_title} Feedback: {name}   |   Class: {class_name}")
+                    r_title.bold = True
+                    r_title.font.size = Pt(14) 
                     
+                    # --- TABLE GENERATION ---
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
                     
@@ -304,6 +308,7 @@ if generate_clicked:
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
+                        add_spacer(doc, 0.3) # Give a little breathing room before the heading
                         doc.add_heading("Personal correction", 2)
                         for q in personal:
                             add_tight_picture(doc, q_images[q], width=personal_img_width)
@@ -324,7 +329,7 @@ if generate_clicked:
                 st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name=f"{unit_title.replace(' ', '_')}_Feedback.docx")
                 
-                # 4. Clean up images and logo
+                # Cleanup
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
                 if logo_path and os.path.exists(logo_path):
