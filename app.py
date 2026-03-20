@@ -85,7 +85,9 @@ questions_db = {
 
 def create_question_image(q_code, text, font_size):
     line_count = text.count('\n') + 1
-    base_padding = 0.3
+    # Reduced base padding to tightly crop the white space IN the image
+    # 0.24 inches total gives roughly 0.3cm above and 0.3cm below the text
+    base_padding = 0.24 
     height_per_line = font_size * 0.035 
     fig_height = base_padding + (line_count * height_per_line)
     
@@ -147,24 +149,15 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, q_labels, dynamic_areas
 
+# --- NEW: EXACT 0.3cm IMAGE SPACING ---
 def add_tight_picture(doc, img_path, width):
+    """Adds the picture with exactly 0.3cm space before and after."""
     paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Cm(0)
-    paragraph.paragraph_format.space_before = Cm(0)
+    paragraph.paragraph_format.space_before = Cm(0.3)
+    paragraph.paragraph_format.space_after = Cm(0.3)
     run = paragraph.add_run()
     run.add_picture(img_path, width=width)
     return paragraph
-
-def add_spacer(doc, height_cm):
-    paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_before = Cm(0)
-    paragraph.paragraph_format.space_after = Cm(0)
-    p_format = paragraph.paragraph_format
-    run = paragraph.add_run()
-    run.font.size = Pt(1) 
-    line_spacing_pts = height_cm * 28.35
-    p_format.line_spacing = Pt(line_spacing_pts)
-    p_format.line_spacing_rule = 3 
 
 # --- 3. BUTTON LAYOUT ---
 col1, col2 = st.columns(2)
@@ -190,11 +183,10 @@ if preview_clicked:
             if first_student is not None:
                 name = str(first_student[0])
                 
-                # Show Custom Titles in Preview (On one line with logo logic)
                 col_prev1, col_prev2 = st.columns([1, 8])
                 with col_prev1:
                     if uploaded_logo is not None:
-                        st.image(uploaded_logo, width=50) # Small preview logo
+                        st.image(uploaded_logo, width=50) 
                 with col_prev2:
                     st.markdown(f"#### {unit_title} Feedback: **{name}** &nbsp; | &nbsp; Class: **{class_name}**")
                 
@@ -239,7 +231,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions and applying {selected_margin}cm margins...'):
+            with st.spinner(f'Reconstructing questions and formatting spacing...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -268,21 +260,17 @@ if generate_clicked:
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
-                    # --- NEW INLINE HEADER LOGIC ---
                     header_p = doc.add_paragraph()
                     header_p.paragraph_format.space_after = Cm(0.3)
                     
-                    # 1. Add Logo (Shrunk to 1.5cm)
                     if logo_path:
                         header_p.add_run().add_picture(logo_path, width=Cm(1.5))
-                        header_p.add_run("    ") # Add space after logo
+                        header_p.add_run("    ") 
                     
-                    # 2. Add Titles on the SAME LINE
                     r_title = header_p.add_run(f"{unit_title} Feedback: {name}   |   Class: {class_name}")
                     r_title.bold = True
                     r_title.font.size = Pt(14) 
                     
-                    # --- TABLE GENERATION ---
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
                     
@@ -308,19 +296,24 @@ if generate_clicked:
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
-                        add_spacer(doc, 0.3) # Give a little breathing room before the heading
-                        doc.add_heading("Personal correction", 2)
+                        # --- ZERO SPACING BEFORE HEADING ---
+                        h_pers = doc.add_heading("Personal correction", 2)
+                        h_pers.paragraph_format.space_before = Cm(0)
+                        
                         for q in personal:
+                            # Automatically applies 0.3cm before and after
                             add_tight_picture(doc, q_images[q], width=personal_img_width)
-                            add_spacer(doc, 0.5)
 
                     doc.add_page_break()
-                    doc.add_heading(f"Whole-class reteaching - {name}", 1)
+                    
+                    # --- ZERO SPACING BEFORE HEADING ---
+                    h_ret = doc.add_heading(f"Whole-class reteaching - {name}", 1)
+                    h_ret.paragraph_format.space_before = Cm(0)
                     
                     if reteach:
                         for q in reteach: 
+                            # Automatically applies 0.3cm before and after
                             add_tight_picture(doc, q_images[q], width=reteach_img_width)
-                            add_spacer(doc, 0.5)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
@@ -329,7 +322,6 @@ if generate_clicked:
                 st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name=f"{unit_title.replace(' ', '_')}_Feedback.docx")
                 
-                # Cleanup
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
                 if logo_path and os.path.exists(logo_path):
