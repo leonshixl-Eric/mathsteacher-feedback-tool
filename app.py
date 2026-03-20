@@ -106,6 +106,10 @@ def create_question_image(q_code, text, font_size):
 
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
+    
+    # --- NEW: Grab the Full Marks row (Assuming it is Row 3 in Excel / iloc[2] in Python) ---
+    full_marks_row = df_marks.iloc[2]
+    
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
     percentage_row = df_marks.iloc[34]
     q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
@@ -150,7 +154,8 @@ def process_data(uploaded_csv, uploaded_mapping):
         if indices:
             dynamic_areas.append((topic, indices))
             
-    return student_rows, percentage_row, q_labels, dynamic_areas
+    # Return the full_marks_row as well so the logic can use it
+    return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
 def add_tight_picture(doc, img_path, width):
     paragraph = doc.add_paragraph()
@@ -173,7 +178,8 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         with st.spinner("Generating preview..."):
-            student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+            # Unpack the new full_marks_row
+            student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
 
             first_student = None
             for _, row in student_rows.iterrows():
@@ -197,8 +203,15 @@ if preview_clicked:
                     w, e = [], []
                     for idx in idxs:
                         score = pd.to_numeric(first_student[idx], errors='coerce')
-                        if score > 0: w.append(q_labels[idx])
-                        else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                        full_mark = pd.to_numeric(full_marks_row[idx], errors='coerce')
+                        
+                        # --- NEW RULE: Must equal full marks to go to WWW ---
+                        if pd.notna(score) and pd.notna(full_mark) and score >= full_mark:
+                            w.append(q_labels[idx])
+                        else: 
+                            e.append(q_labels[idx])
+                            student_ebi.append(q_labels[idx])
+                            
                     preview_table.append({"Area": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
                 
                 st.table(pd.DataFrame(preview_table))
@@ -239,7 +252,8 @@ if generate_clicked:
                     with open(logo_path, "wb") as f:
                         f.write(uploaded_logo.getbuffer())
 
-                student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+                # Unpack the new full_marks_row
+                student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
                 doc = Document()
@@ -287,9 +301,15 @@ if generate_clicked:
                         w, e = [], []
                         for idx in idxs:
                             score = pd.to_numeric(row[idx], errors='coerce')
-                            if score > 0: w.append(q_labels[idx])
-                            else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
-                        
+                            full_mark = pd.to_numeric(full_marks_row[idx], errors='coerce')
+                            
+                            # --- NEW RULE: Must equal full marks to go to WWW ---
+                            if pd.notna(score) and pd.notna(full_mark) and score >= full_mark:
+                                w.append(q_labels[idx])
+                            else: 
+                                e.append(q_labels[idx])
+                                student_ebi.append(q_labels[idx])
+                                
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = str(title), ", ".join(w), ", ".join(e)
                         for i in range(3): r[i].width = col_widths[i]
@@ -318,7 +338,7 @@ if generate_clicked:
                 target_docx = BytesIO()
                 doc.save(target_docx)
 
-                # --- 2. BUILD THE POWERPOINT (IF CHECKED) ---
+                # --- 2. BUILD THE POWERPOINT ---
                 target_pptx = None
                 global_reteach_qs = []
                 
@@ -336,12 +356,10 @@ if generate_clicked:
                     if len(global_reteach_qs) > 0:
                         prs = Presentation()
                         for q in global_reteach_qs:
-                            # --- NEW: Layout 6 is a completely "Blank" slide ---
                             slide = prs.slides.add_slide(prs.slide_layouts[6])
                             
                             img_path = q_images[q]
                             pic_left = PptxCm(2)
-                            # Moved the image up since there is no title taking up space
                             pic_top = PptxCm(2.5) 
                             pic_width = PptxCm(21.4) 
                             
@@ -350,7 +368,7 @@ if generate_clicked:
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
 
-                # --- 3. BUNDLE FILES INTO A ZIP (DOWNLOAD ALL) ---
+                # --- 3. BUNDLE FILES INTO A ZIP ---
                 safe_class = str(class_name).strip().replace(" ", "_")
                 safe_unit = str(unit_title).strip().replace(" ", "_")
                 docx_name = f"{safe_class}_{safe_unit}_Feedback.docx"
