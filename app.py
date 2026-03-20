@@ -1,6 +1,6 @@
 import sys
 import matplotlib
-matplotlib.use('Agg') # Crucial for Streamlit servers
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
@@ -20,25 +20,28 @@ except ImportError:
             return kind.extension if kind else None
     sys.modules['imghdr'] = MockImghdr()
 
-st.set_page_config(page_title="Maths Feedback Pro", layout="centered")
+st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
 st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting.")
 
-# --- 1. THE UPLOADERS & SETTINGS ---
+# --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Reference)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 st.markdown("---")
 st.subheader("⚙️ Document Settings")
-# Layout the settings side-by-side
-col_setting1, col_setting2 = st.columns(2)
+
+# --- NEW: 3-Column Settings Layout ---
+col_setting1, col_setting2, col_setting3 = st.columns(3)
 with col_setting1:
-    selected_font_size = st.slider("Select Question Font Size", min_value=10, max_value=14, value=11, step=1)
+    selected_font_size = st.slider("Question Font Size", min_value=10, max_value=14, value=11, step=1)
 with col_setting2:
-    # New Threshold Slider (converts to a decimal later)
-    selected_threshold = st.slider("Whole-Class Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
+    selected_threshold = st.slider("Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
+with col_setting3:
+    # New Margin Slider (from 0.5cm up to 3.0cm)
+    selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.27, step=0.1)
 st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
@@ -85,7 +88,6 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
-# --- 3. HELPER TO PROCESS DATA ---
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
@@ -101,15 +103,14 @@ def process_data(uploaded_csv, uploaded_mapping):
         
     return student_rows, percentage_row, q_labels, dynamic_areas
 
-# --- 4. BUTTON LAYOUT ---
+# --- 3. BUTTON LAYOUT ---
 col1, col2 = st.columns(2)
-
 with col1:
     preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
 with col2:
     generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
 
-# --- 5. PREVIEW LOGIC ---
+# --- 4. PREVIEW LOGIC ---
 if preview_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.warning("Please upload all three files to see a preview.")
@@ -117,7 +118,6 @@ if preview_clicked:
         with st.spinner("Generating preview..."):
             student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
             
-            # Find the first valid student
             first_student = None
             for _, row in student_rows.iterrows():
                 if str(row[0]) != 'nan' and str(row[0]) != 'Name':
@@ -140,7 +140,6 @@ if preview_clicked:
                 
                 st.table(pd.DataFrame(preview_table))
                 
-                # Apply the Custom Threshold
                 reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                 personal = [q for q in student_ebi if q not in reteach]
                 
@@ -164,32 +163,54 @@ if preview_clicked:
             else:
                 st.error("Could not find any valid students in the CSV.")
 
-# --- 6. GENERATE LOGIC ---
+# --- 5. GENERATE LOGIC ---
 if generate_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions at Size {selected_font_size} and building Word doc...'):
+            with st.spinner(f'Reconstructing questions and applying {selected_margin}cm margins...'):
                 student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
                 doc = Document()
+                
+                # --- DYNAMIC WIDTH CALCULATIONS ---
+                # A4 Paper is 21cm wide. We subtract the left and right margins.
+                available_width_cm = 21.0 - (2 * selected_margin)
+                
+                # WWW and EBI columns stay at a readable 3.5cm each (7.0cm total)
+                # The Area column takes whatever space is left over!
+                area_col_width = available_width_cm - 7.0 
+                col_widths = [Cm(area_col_width), Cm(3.5), Cm(3.5)]
+                
+                # We also make sure the images don't exceed the page margins
+                personal_img_width = Cm(min(12.0, available_width_cm))
+                reteach_img_width = Cm(min(14.0, available_width_cm))
+
                 for section in doc.sections:
-                    section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
-                    section.left_margin, section.right_margin = Cm(0.5), Cm(0.5)
+                    # Enforce standard A4 size explicitly just in case
+                    section.page_width = Cm(21.0)
+                    section.page_height = Cm(29.7)
+                    # Apply user's selected margins
+                    section.top_margin, section.bottom_margin = Cm(selected_margin), Cm(selected_margin)
+                    section.left_margin, section.right_margin = Cm(selected_margin), Cm(selected_margin)
 
                 for _, row in student_rows.iterrows():
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
                     doc.add_heading(f"Feedback Report: {name}", 1)
+                    
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
-                    table.autofit = True
+                    
+                    for i in range(3):
+                        table.columns[i].width = col_widths[i]
                     
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
+                    for i in range(3): hdr[i].width = col_widths[i]
                     
                     student_ebi = []
                     for title, idxs in dynamic_areas:
@@ -201,27 +222,27 @@ if generate_clicked:
                         
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = str(title), ", ".join(w), ", ".join(e)
+                        for i in range(3): r[i].width = col_widths[i]
 
-                    # Apply the Custom Threshold
                     reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
                         doc.add_heading("Personal correction", 2)
-                        for q in personal: doc.add_picture(q_images[q], width=Cm(12))
+                        for q in personal: doc.add_picture(q_images[q], width=personal_img_width)
 
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
                     if reteach:
                         for q in reteach: 
-                            doc.add_picture(q_images[q], width=Cm(14))
+                            doc.add_picture(q_images[q], width=reteach_img_width)
                             doc.add_paragraph()
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
                 target = BytesIO()
                 doc.save(target)
-                st.success(f"✅ Feedback Pack Ready (Font Size {selected_font_size}, Threshold {selected_threshold}%)!")
+                st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
                 for f in os.listdir():
