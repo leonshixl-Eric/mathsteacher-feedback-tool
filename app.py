@@ -86,34 +86,7 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
-# --- 3. THE INDESTRUCTIBLE PARSER ---
-def parse_mapping_string(raw_str, valid_labels):
-    # 1. Lowercase everything and change "and" to a comma
-    raw_str = str(raw_str).lower().replace('and', ',').replace('&', ',')
-    # 2. Destroy ALL spaces and newlines
-    raw_str = "".join(raw_str.split())
-    # 3. Split by comma
-    tokens = raw_str.split(',')
-    
-    qs = []
-    last_num = ""
-    for t in tokens:
-        if not t: continue
-        # Extract just the digits and just the letters
-        num_part = "".join([c for c in t if c.isdigit()])
-        letter_part = "".join([c for c in t if c.isalpha()])
-        
-        if num_part:
-            last_num = num_part
-            candidate = num_part + letter_part
-        else:
-            candidate = last_num + letter_part
-            
-        if candidate in valid_labels:
-            qs.append(candidate)
-            
-    return qs
-
+# --- 3. MULTI-COLUMN DATA PROCESSING ---
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
@@ -131,8 +104,32 @@ def process_data(uploaded_csv, uploaded_mapping):
         if pd.isna(map_row.iloc[0]): continue
         topic = str(map_row.iloc[0]).strip()
         
-        # Use the indestructible parser
-        qs = parse_mapping_string(map_row.iloc[1], q_labels)
+        qs = []
+        last_num = ""
+        
+        # NEW: Loop through ALL columns in the row after the Topic column
+        for col_idx in range(1, len(map_row)):
+            cell_val = map_row.iloc[col_idx]
+            if pd.isna(cell_val): continue
+            
+            # Clean up the cell (e.g. "1a", " 1 b ", or "1a, 1b")
+            raw_str = str(cell_val).lower().replace('and', ',').replace('&', ',')
+            raw_str = "".join(raw_str.split())
+            tokens = raw_str.split(',')
+            
+            for t in tokens:
+                if not t: continue
+                num_part = "".join([c for c in t if c.isdigit()])
+                letter_part = "".join([c for c in t if c.isalpha()])
+                
+                if num_part:
+                    last_num = num_part
+                    candidate = num_part + letter_part
+                else:
+                    candidate = last_num + letter_part
+                    
+                if candidate in q_labels and candidate not in qs:
+                    qs.append(candidate)
         
         indices = [q_labels.index(q) for q in qs]
         if indices:
@@ -155,9 +152,8 @@ if preview_clicked:
         with st.spinner("Generating preview..."):
             student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
             
-            # THE DEBUGGER: Shows exactly what the app extracted from your mapping file
-            with st.expander("🛠️ DEBUG: See how the app read your Mapping File", expanded=True):
-                st.write("If '1b' is missing from the lists below, your Excel mapping file has a typo. If it IS in the list but missing from the table, your Marks spreadsheet columns are misaligned.")
+            with st.expander("🛠️ DEBUG: See how the app read your Multi-Column Mapping File", expanded=True):
+                st.write("The app now scans across all columns in your Excel file.")
                 for title, idxs in dynamic_areas:
                     mapped_qs = [q_labels[i] for i in idxs]
                     st.success(f"**{title}**: {mapped_qs}")
