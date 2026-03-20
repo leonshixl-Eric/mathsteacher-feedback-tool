@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
 from docx import Document
-# NEW: Import necessary WordML formatting tools
 from docx.shared import Cm, Pt
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -33,16 +32,27 @@ uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Reference)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
+# --- NEW: BRANDING SETTINGS ---
+st.markdown("---")
+st.subheader("📝 Document Branding")
+col_brand1, col_brand2 = st.columns(2)
+with col_brand1:
+    unit_title = st.text_input("Unit/Topic Title", value="Standard Form Exam")
+    class_name = st.text_input("Class Name", value="Year 10 Maths")
+with col_brand2:
+    uploaded_logo = st.file_uploader("Upload School Logo (Optional)", type=["png", "jpg", "jpeg"])
+
+# --- DOCUMENT SETTINGS ---
 st.markdown("---")
 st.subheader("⚙️ Document Settings")
 
 col_setting1, col_setting2, col_setting3 = st.columns(3)
 with col_setting1:
-    selected_font_size = st.slider("Question Font Size", min_value=10, max_value=14, value=11, step=1)
+    selected_font_size = st.slider("Question Font Size", min_value=10, max_value=14, value=12, step=1)
 with col_setting2:
     selected_threshold = st.slider("Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
 with col_setting3:
-    selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.27, step=0.1)
+    selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.3, step=0.1)
 st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
@@ -137,9 +147,7 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, q_labels, dynamic_areas
 
-# NEW FORMATTING HELPERS
 def add_tight_picture(doc, img_path, width):
-    """Adds a picture in its own paragraph with ZERO space after it."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_after = Cm(0)
     paragraph.paragraph_format.space_before = Cm(0)
@@ -148,22 +156,15 @@ def add_tight_picture(doc, img_path, width):
     return paragraph
 
 def add_spacer(doc, height_cm):
-    """Adds a paragraph forced to have exactly the specified height (the gap)."""
     paragraph = doc.add_paragraph()
-    # Lock the exact height using WordprocessingML formatting
     paragraph.paragraph_format.space_before = Cm(0)
     paragraph.paragraph_format.space_after = Cm(0)
-    
-    # Access internal XML for precise font height control
     p_format = paragraph.paragraph_format
     run = paragraph.add_run()
-    run.font.size = Pt(1) # Make font tiny so it doesn't affect space
-    
-    # Define exact line height (Word treats 12pt font as ~0.42cm usually)
-    # 0.5cm is approximately 14.17 points.
-    line_spacing_pts = height_per_line_in_pts = height_cm * 28.35
+    run.font.size = Pt(1) 
+    line_spacing_pts = height_cm * 28.35
     p_format.line_spacing = Pt(line_spacing_pts)
-    p_format.line_spacing_rule = 3 # Exact line spacing rule
+    p_format.line_spacing_rule = 3 
 
 # --- 3. BUTTON LAYOUT ---
 col1, col2 = st.columns(2)
@@ -179,12 +180,6 @@ if preview_clicked:
     else:
         with st.spinner("Generating preview..."):
             student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
-            
-            with st.expander("🛠️ DEBUG: See how the app read your Multi-Column Mapping File", expanded=True):
-                st.write("The app now scans across all columns in your Excel file.")
-                for title, idxs in dynamic_areas:
-                    mapped_qs = [q_labels[i] for i in idxs]
-                    st.success(f"**{title}**: {mapped_qs}")
 
             first_student = None
             for _, row in student_rows.iterrows():
@@ -194,7 +189,14 @@ if preview_clicked:
             
             if first_student is not None:
                 name = str(first_student[0])
-                st.markdown(f"### 📋 Preview for: **{name}**")
+                
+                # Show Logo in Preview if uploaded
+                if uploaded_logo is not None:
+                    st.image(uploaded_logo, width=150)
+                
+                # Show Custom Titles in Preview
+                st.markdown(f"### 📋 {unit_title} Feedback: **{name}**")
+                st.markdown(f"**Class:** {class_name}")
                 
                 preview_table = []
                 student_ebi = []
@@ -237,7 +239,14 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions and applying exact 0.5cm image gaps...'):
+            with st.spinner(f'Reconstructing questions and applying {selected_margin}cm margins...'):
+                # 1. Temporarily save the logo to disk if it exists
+                logo_path = None
+                if uploaded_logo is not None:
+                    logo_path = "temp_logo.png"
+                    with open(logo_path, "wb") as f:
+                        f.write(uploaded_logo.getbuffer())
+
                 student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
@@ -260,7 +269,15 @@ if generate_clicked:
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
-                    doc.add_heading(f"Feedback Report: {name}", 1)
+                    # 2. Add the Logo to the top of the student's page
+                    if logo_path:
+                        doc.add_picture(logo_path, width=Cm(4.0))
+                    
+                    # 3. Use the Custom Titles
+                    doc.add_heading(f"{unit_title} Feedback: {name}", 1)
+                    p = doc.add_paragraph()
+                    p.add_run(f"Class: ").bold = True
+                    p.add_run(f"{class_name}")
                     
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
@@ -286,35 +303,32 @@ if generate_clicked:
                     reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal = [q for q in student_ebi if q not in reteach]
                     
-                    # --- APPLIYNG IMAGE SPACING (PERSONAL) ---
                     if personal:
                         doc.add_heading("Personal correction", 2)
                         for q in personal:
-                            # 1. Add picture in a ZERO-SPACE paragraph
                             add_tight_picture(doc, q_images[q], width=personal_img_width)
-                            # 2. Add an EXACT 0.5cm spacer
                             add_spacer(doc, 0.5)
 
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
                     
-                    # --- APPLIYNG IMAGE SPACING (RETEACH) ---
                     if reteach:
                         for q in reteach: 
-                            # 1. Add picture in a ZERO-SPACE paragraph
                             add_tight_picture(doc, q_images[q], width=reteach_img_width)
-                            # 2. Add an EXACT 0.5cm spacer
                             add_spacer(doc, 0.5)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
                 target = BytesIO()
                 doc.save(target)
-                st.success(f"✅ Feedback Pack Ready! (Exact image gaps: 0.5cm)")
-                st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
+                st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
+                st.download_button("📥 Download Document", data=target.getvalue(), file_name=f"{unit_title.replace(' ', '_')}_Feedback.docx")
                 
+                # 4. Clean up images and logo
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
+                if logo_path and os.path.exists(logo_path):
+                    os.remove(logo_path)
 
         except Exception as e:
             st.error(f"Error: {e}")
