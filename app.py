@@ -2,40 +2,60 @@ import streamlit as st
 import pandas as pd
 import fitz  # PyMuPDF
 from docx import Document
-from docx.shared import Cm, Inches
+from docx.shared import Cm
 import os
 from io import BytesIO
 
-st.set_page_config(page_title="Teacher Feedback Tool", layout="centered")
+st.set_page_config(page_title="Universal Exam Feedback Tool", layout="centered")
 
-st.title("📊 Exam Feedback Automator")
-st.write("Upload your files below to generate the personalized 2-page feedback booklets.")
+st.title("📊 Exam Feedback Generator")
+st.write("Upload your marks, exam paper, and topic mapping to generate booklets.")
 
 # 1. File Uploaders
-uploaded_csv = st.file_uploader("1. Upload Marks CSV (Excel exported as CSV)", type="csv")
+uploaded_csv = st.file_uploader("1. Upload Marks CSV", type="csv")
 uploaded_pdf = st.file_uploader("2. Upload Exam PDF", type="pdf")
+uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 if st.button("Generate Feedback Pack"):
-    if not uploaded_csv or not uploaded_pdf:
-        st.error("Please upload both the CSV and the PDF file.")
+    if not uploaded_csv or not uploaded_pdf or not uploaded_mapping:
+        st.error("Please upload all three files (Marks, PDF, and Mapping) to proceed.")
     else:
         try:
-            with st.spinner('Reading data and cropping PDF snippets...'):
-                # Load Data
-                df = pd.read_csv(uploaded_csv, header=None)
-                full_marks_row = df.iloc[2]
-                student_rows = df.iloc[3:29].reset_index(drop=True)
-                percentage_row = df.iloc[34]
-
+            with st.spinner('Processing...'):
+                # Load Marks Data
+                df_marks = pd.read_csv(uploaded_csv, header=None)
+                full_marks_row = df_marks.iloc[2]
+                student_rows = df_marks.iloc[3:29].reset_index(drop=True)
+                percentage_row = df_marks.iloc[34]
+                
+                # Question labels from column headers
                 q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-                # Save PDF temporarily to process with fitz
+                # Process Mapping File
+                if uploaded_mapping.name.endswith('.csv'):
+                    df_map = pd.read_csv(uploaded_mapping)
+                else:
+                    df_map = pd.read_excel(uploaded_mapping)
+                
+                # Convert Mapping to the list format the code needs
+                # Assumes columns are named 'Topic' and 'Questions'
+                dynamic_areas = []
+                for _, map_row in df_map.iterrows():
+                    topic = map_row['Topic']
+                    qs = str(map_row['Questions']).split(',')
+                    indices = []
+                    for q in qs:
+                        q_clean = q.strip()
+                        if q_clean in q_labels:
+                            indices.append(q_labels.index(q_clean))
+                    dynamic_areas.append((topic, indices))
+
+                # Process PDF
                 with open("temp_exam.pdf", "wb") as f:
                     f.write(uploaded_pdf.getbuffer())
-                
                 doc_pdf = fitz.open("temp_exam.pdf")
 
-                # Define Crop Areas (Coordinates based on our testing)
+                # Snippet coordinates
                 crops = {
                     "1a": (0, fitz.Rect(50, 130, 550, 240)), "1b": (0, fitz.Rect(50, 200, 550, 310)),
                     "2a": (0, fitz.Rect(50, 330, 550, 440)), "2b": (0, fitz.Rect(50, 400, 550, 510)),
@@ -49,41 +69,19 @@ if st.button("Generate Feedback Pack"):
                     "10": (3, fitz.Rect(50, 420, 550, 750)) 
                 }
 
-                # Create Word Doc
                 doc = Document()
-                
-                # Table Topics
-                areas = [
-                    ("Ordinary numbers to powers of 10", [1, 2]),
-                    ("Powers of 10 to ordinary numbers", [3, 4]),
-                    ("Standard form to ordinary numbers – positive indices", [5, 6]),
-                    ("Standard form to ordinary numbers – negative indices", [7, 8]),
-                    ("Ordinary numbers to standard form – large numbers", [9, 10]),
-                    ("Ordinary numbers to standard form – small numbers", [11, 12]),
-                    ("Comparing ordinary numbers and standard form", [13, 14]),
-                    ("Correcting numbers to be in standard form", [15, 16]),
-                    ("Calculating with standard form - calculator", [17, 18]),
-                    ("Calculating with standard form", [19])
-                ]
-
                 for _, row in student_rows.iterrows():
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
-                    # --- PAGE 1 ---
-                    doc.add_heading(f"Feedback Report: {name}", level=1)
-                    
-                    table = doc.add_table(rows=1, cols=3)
-                    table.style = 'Table Grid'
+                    doc.add_heading(f"Feedback: {name}", level=1)
+                    table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
-                    
-                    table.columns[0].width = Cm(11)
-                    table.columns[1].width = Cm(3.25)
-                    table.columns[2].width = Cm(3.25)
+                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(11), Cm(3.25), Cm(3.25)
                     
                     student_ebi = []
-                    for title, idxs in areas:
+                    for title, idxs in dynamic_areas:
                         www, ebi = [], []
                         for idx in idxs:
                             score = pd.to_numeric(row[idx], errors='coerce')
@@ -91,12 +89,10 @@ if st.button("Generate Feedback Pack"):
                             else:
                                 ebi.append(q_labels[idx])
                                 student_ebi.append(q_labels[idx])
-                        
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = title, ", ".join(www), ", ".join(ebi)
                         r[0].width, r[1].width, r[2].width = Cm(11), Cm(3.25), Cm(3.25)
 
-                    # Regrouping logic (55%)
                     reteach, personal = [], []
                     for q in student_ebi:
                         idx = q_labels.index(q)
@@ -112,7 +108,6 @@ if st.button("Generate Feedback Pack"):
                             pix.save(f"temp_{q}.png")
                             doc.add_picture(f"temp_{q}.png", width=Cm(12))
 
-                    # --- PAGE 2 ---
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", level=1)
                     if reteach:
@@ -121,25 +116,16 @@ if st.button("Generate Feedback Pack"):
                             pix = doc_pdf[pg].get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
                             pix.save(f"temp_{q}.png")
                             doc.add_picture(f"temp_{q}.png", width=Cm(14))
-                    else:
-                        doc.add_paragraph("Mastered all class focus areas.")
-                    
                     doc.add_page_break()
 
-                # Clean up temporary files
+                target = BytesIO()
+                doc.save(target)
+                st.success("Pack Ready!")
+                st.download_button(label="📥 Download Word Document", data=target.getvalue(), file_name="Feedback.docx")
                 doc_pdf.close()
                 os.remove("temp_exam.pdf")
                 for f in os.listdir():
-                    if f.startswith("temp_") and f.endswith(".png"):
-                        os.remove(f)
-
-                # Prepare for download
-                target = BytesIO()
-                doc.save(target)
-                st.success("Successfully generated feedback for all students!")
-                st.download_button(label="📥 Download Feedback Pack", 
-                                   data=target.getvalue(), 
-                                   file_name=f"Standard_Form_Feedback.docx")
+                    if f.startswith("temp_") and f.endswith(".png"): os.remove(f)
 
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Error: {e}")
