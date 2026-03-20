@@ -1,5 +1,4 @@
 import sys
-import re  # <-- NEW: Smart text scanner to read "1a, b" properly
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
@@ -87,51 +86,53 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
-# --- 3. SMART DATA PROCESSING ---
+# --- 3. THE INDESTRUCTIBLE PARSER ---
+def parse_mapping_string(raw_str, valid_labels):
+    # 1. Lowercase everything and change "and" to a comma
+    raw_str = str(raw_str).lower().replace('and', ',').replace('&', ',')
+    # 2. Destroy ALL spaces and newlines
+    raw_str = "".join(raw_str.split())
+    # 3. Split by comma
+    tokens = raw_str.split(',')
+    
+    qs = []
+    last_num = ""
+    for t in tokens:
+        if not t: continue
+        # Extract just the digits and just the letters
+        num_part = "".join([c for c in t if c.isdigit()])
+        letter_part = "".join([c for c in t if c.isalpha()])
+        
+        if num_part:
+            last_num = num_part
+            candidate = num_part + letter_part
+        else:
+            candidate = last_num + letter_part
+            
+        if candidate in valid_labels:
+            qs.append(candidate)
+            
+    return qs
+
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
     percentage_row = df_marks.iloc[34]
     q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-    # Force header=None so we don't swallow the first row
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
     
-    # If the file actually had a header row, gracefully skip it
     first_cell = str(df_map.iloc[0, 0]).lower()
-    if 'topic' in first_cell or 'area' in first_cell or 'module' in first_cell:
+    if 'topic' in first_cell or 'area' in first_cell:
         df_map = df_map.iloc[1:].reset_index(drop=True)
 
     dynamic_areas = []
-    
     for _, map_row in df_map.iterrows():
         if pd.isna(map_row.iloc[0]): continue
         topic = str(map_row.iloc[0]).strip()
-        raw_qs = str(map_row.iloc[1]).lower()
         
-        # Smart formatting fixes
-        raw_qs = re.sub(r'(\d)\s+([a-z])', r'\1\2', raw_qs) # "1 a" -> "1a"
-        raw_qs = re.sub(r'\band\b|&', ',', raw_qs) # "1a and b" -> "1a , b"
-        
-        tokens = re.split(r'[,\s]+', raw_qs)
-        qs = []
-        last_num = ""
-        
-        for token in tokens:
-            token = token.strip()
-            if not token: continue
-            
-            # Match things like "1a", "2", "10"
-            m1 = re.match(r'^(\d+)([a-z]*)$', token)
-            if m1:
-                last_num = m1.group(1)
-                if token in q_labels: qs.append(token)
-            else:
-                # Match isolated letters like "b"
-                m2 = re.match(r'^([a-z])$', token)
-                if m2 and last_num:
-                    combined = last_num + token
-                    if combined in q_labels: qs.append(combined)
+        # Use the indestructible parser
+        qs = parse_mapping_string(map_row.iloc[1], q_labels)
         
         indices = [q_labels.index(q) for q in qs]
         if indices:
@@ -146,7 +147,7 @@ with col1:
 with col2:
     generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
 
-# --- 5. PREVIEW LOGIC ---
+# --- 5. PREVIEW LOGIC (WITH DEBUGGER) ---
 if preview_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.warning("Please upload all three files to see a preview.")
@@ -154,6 +155,13 @@ if preview_clicked:
         with st.spinner("Generating preview..."):
             student_rows, percentage_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
             
+            # THE DEBUGGER: Shows exactly what the app extracted from your mapping file
+            with st.expander("🛠️ DEBUG: See how the app read your Mapping File", expanded=True):
+                st.write("If '1b' is missing from the lists below, your Excel mapping file has a typo. If it IS in the list but missing from the table, your Marks spreadsheet columns are misaligned.")
+                for title, idxs in dynamic_areas:
+                    mapped_qs = [q_labels[i] for i in idxs]
+                    st.success(f"**{title}**: {mapped_qs}")
+
             first_student = None
             for _, row in student_rows.iterrows():
                 if str(row[0]) != 'nan' and str(row[0]) != 'Name':
