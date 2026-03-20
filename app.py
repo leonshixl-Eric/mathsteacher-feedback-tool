@@ -33,14 +33,12 @@ uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", ty
 st.markdown("---")
 st.subheader("⚙️ Document Settings")
 
-# --- NEW: 3-Column Settings Layout ---
 col_setting1, col_setting2, col_setting3 = st.columns(3)
 with col_setting1:
     selected_font_size = st.slider("Question Font Size", min_value=10, max_value=14, value=11, step=1)
 with col_setting2:
     selected_threshold = st.slider("Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
 with col_setting3:
-    # New Margin Slider (from 0.5cm up to 3.0cm)
     selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.27, step=0.1)
 st.markdown("---")
 
@@ -88,6 +86,7 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
+# --- 3. BULLETPROOF DATA PROCESSING ---
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     student_rows = df_marks.iloc[3:29].reset_index(drop=True)
@@ -96,21 +95,31 @@ def process_data(uploaded_csv, uploaded_mapping):
 
     df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
     dynamic_areas = []
+    
     for _, map_row in df_map.iterrows():
-        topic, qs = str(map_row.iloc[0]), str(map_row.iloc[1]).split(',')
-        indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
+        topic = str(map_row.iloc[0])
+        
+        # BULLETPROOF FIX: Convert to lowercase, remove ALL spaces, and handle weird newlines
+        raw_qs = str(map_row.iloc[1]).replace('\n', ',').replace(' ', '').lower()
+        qs = raw_qs.split(',')
+        
+        indices = []
+        for q in qs:
+            if q in q_labels:
+                indices.append(q_labels.index(q))
+                
         dynamic_areas.append((topic, indices))
         
     return student_rows, percentage_row, q_labels, dynamic_areas
 
-# --- 3. BUTTON LAYOUT ---
+# --- 4. BUTTON LAYOUT ---
 col1, col2 = st.columns(2)
 with col1:
     preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
 with col2:
     generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
 
-# --- 4. PREVIEW LOGIC ---
+# --- 5. PREVIEW LOGIC ---
 if preview_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.warning("Please upload all three files to see a preview.")
@@ -163,7 +172,7 @@ if preview_clicked:
             else:
                 st.error("Could not find any valid students in the CSV.")
 
-# --- 5. GENERATE LOGIC ---
+# --- 6. GENERATE LOGIC ---
 if generate_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.error("Please upload all three files (Marks, PDF, Mapping).")
@@ -175,24 +184,16 @@ if generate_clicked:
 
                 doc = Document()
                 
-                # --- DYNAMIC WIDTH CALCULATIONS ---
-                # A4 Paper is 21cm wide. We subtract the left and right margins.
                 available_width_cm = 21.0 - (2 * selected_margin)
-                
-                # WWW and EBI columns stay at a readable 3.5cm each (7.0cm total)
-                # The Area column takes whatever space is left over!
                 area_col_width = available_width_cm - 7.0 
                 col_widths = [Cm(area_col_width), Cm(3.5), Cm(3.5)]
                 
-                # We also make sure the images don't exceed the page margins
                 personal_img_width = Cm(min(12.0, available_width_cm))
                 reteach_img_width = Cm(min(14.0, available_width_cm))
 
                 for section in doc.sections:
-                    # Enforce standard A4 size explicitly just in case
                     section.page_width = Cm(21.0)
                     section.page_height = Cm(29.7)
-                    # Apply user's selected margins
                     section.top_margin, section.bottom_margin = Cm(selected_margin), Cm(selected_margin)
                     section.left_margin, section.right_margin = Cm(selected_margin), Cm(selected_margin)
 
@@ -205,8 +206,7 @@ if generate_clicked:
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
                     
-                    for i in range(3):
-                        table.columns[i].width = col_widths[i]
+                    for i in range(3): table.columns[i].width = col_widths[i]
                     
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
