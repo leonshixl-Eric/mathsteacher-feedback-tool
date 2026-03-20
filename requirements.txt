@@ -1,5 +1,5 @@
-streamlit
 pandas
 python-docx
-pymupdf
+matplotlib
+streamlit
 openpyxl
