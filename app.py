@@ -1,79 +1,91 @@
+import sys
+import matplotlib
+matplotlib.use('Agg') # Crucial for Streamlit servers
+import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
 from docx import Document
 from docx.shared import Cm
-from PIL import Image, ImageChops
 import os
 from io import BytesIO
 
-st.set_page_config(page_title="Maths Feedback Automator", layout="centered")
+# --- FIX FOR PYTHON 3.13 ---
+try:
+    import imghdr
+except ImportError:
+    import filetype
+    class MockImghdr:
+        def what(self, file, h=None):
+            kind = filetype.guess(file)
+            return kind.extension if kind else None
+    sys.modules['imghdr'] = MockImghdr()
 
-st.title("📊 Universal Exam Feedback Tool")
-st.write("Upload your files. This version uses 'Smart-Crop' to capture perfect, tight snippets from the PDF.")
+st.set_page_config(page_title="Maths Feedback Pro", layout="centered")
 
-# 1. THE THREE UPLOADERS
+st.title("📊 High-Fidelity Feedback Generator")
+st.write("Upload all three files. Questions are fully reconstructed with perfect mathematical formatting.")
+
+# --- 1. THE THREE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
 uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
-# Helper function to trim white space
-def trim_white_space(img_path):
-    im = Image.open(img_path)
-    bg = Image.new(im.mode, im.size, im.getpixel((0,0)))
-    diff = ImageChops.difference(im, bg)
-    diff = ImageChops.add(diff, diff, 2.0, -100)
-    bbox = diff.getbbox()
-    if bbox:
-        return im.crop(bbox)
-    return im
+# --- 2. THE RECONSTRUCTION ENGINE (Perfect Math Formatting) ---
+# This ensures the full instruction AND the question are drawn perfectly.
+questions_db = {
+    "1a": r"Write each number as a power of 10." + "\n" + r"1a) 1000",
+    "1b": r"Write each number as a power of 10." + "\n" + r"1b) 0.01",
+    "2a": r"Write each power of 10 as an ordinary number." + "\n" + r"2a) $10^5$",
+    "2b": r"Write each power of 10 as an ordinary number." + "\n" + r"2b) $10^{-3}$",
+    "3a": r"Write each number in standard form as an ordinary number." + "\n" + r"3a) $5 \times 10^6$",
+    "3b": r"Write each number in standard form as an ordinary number." + "\n" + r"3b) $3.7 \times 10^3$",
+    "4a": r"Write each number in standard form as an ordinary number." + "\n" + r"4a) $7 \times 10^{-3}$",
+    "4b": r"Write each number in standard form as an ordinary number." + "\n" + r"4b) $8.39 \times 10^{-5}$",
+    "5a": r"5a) The diameter of Mars is approximately 7000 km." + "\n" + r"      Write the diameter of Mars in standard form.",
+    "5b": r"5b) The diameter of Uranus is approximately 50,720,000 m." + "\n" + r"      Write the diameter of Uranus in standard form.",
+    "6a": r"Write each number in standard form." + "\n" + r"6a) 0.0005",
+    "6b": r"Write each number in standard form." + "\n" + r"6b) 0.0201",
+    "7a": r"Write <, > or = to make the statements correct." + "\n" + r"7a) 810,000 [   ] $8.1 \times 10^4$",
+    "7b": r"Write <, > or = to make the statements correct." + "\n" + r"7b) $3 \times 10^{-4}$ [   ] 0.0003",
+    "8a": r"Write each number in standard form." + "\n" + r"8a) $64 \times 10^7$",
+    "8b": r"Write each number in standard form." + "\n" + r"8b) $360.7 \times 10^{-5}$",
+    "9a": r"Work out the following." + "\n" + r"Give your answers in standard form." + "\n" + r"9a) $(3 \times 10^4) + (6 \times 10^3)$",
+    "9b": r"Work out the following." + "\n" + r"Give your answers in standard form." + "\n" + r"9b) $(1.5 \times 10^{-5}) \div (5 \times 10^{-1})$",
+    "10": r"10) The distance from Earth to Venus is approximately $4.5 \times 10^7$ km." + "\n" +
+          r"      A spacecraft travels at a speed of $5 \times 10^8$ km/h." + "\n" +
+          r"      Work out how many hours it will take the spacecraft to reach Venus." + "\n" +
+          r"      Give your answer in standard form."
+}
 
+def create_question_image(q_code, text):
+    """Draws the text perfectly with adaptive height."""
+    line_count = text.count('\n') + 1
+    fig_height = 0.5 + (line_count * 0.4) # Adapts to fit full instructions
+    
+    plt.figure(figsize=(7, fig_height))
+    plt.text(0.01, 0.5, text, fontsize=12, verticalalignment='center', fontfamily='serif')
+    plt.axis('off')
+    plt.tight_layout(pad=0)
+    
+    img_name = f"q_{q_code}.png"
+    plt.savefig(img_name, dpi=200, bbox_inches='tight')
+    plt.close()
+    return img_name
+
+# --- 3. CORE GENERATOR ---
 if st.button("Generate Feedback Pack"):
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
-        st.error("Please upload all THREE files to proceed.")
+        st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner('Smart-cropping questions from PDF...'):
-                # Load Data
+            with st.spinner('Reconstructing perfect questions and building report...'):
+                # Read Marks
                 df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
                 student_rows = df_marks.iloc[3:29].reset_index(drop=True)
                 percentage_row = df_marks.iloc[34]
                 q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
-                # Process PDF
-                pdf_bytes = uploaded_pdf.read()
-                doc_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-                # The "Master List" of Question Coordinates (The real question parts)
-                # These coordinates are slightly taller to catch the instructions above.
-                crops = {
-                    "1a": (0, fitz.Rect(50, 105, 550, 185)), "1b": (0, fitz.Rect(50, 105, 550, 240)),
-                    "2a": (0, fitz.Rect(50, 260, 550, 360)), "2b": (0, fitz.Rect(50, 260, 550, 430)),
-                    "3a": (0, fitz.Rect(50, 460, 550, 560)), "3b": (0, fitz.Rect(50, 460, 550, 630)),
-                    "4a": (1, fitz.Rect(50, 80, 550, 200)),  "4b": (1, fitz.Rect(50, 80, 550, 300)),
-                    "5a": (1, fitz.Rect(50, 320, 550, 450)), "5b": (1, fitz.Rect(50, 320, 550, 580)),
-                    "6a": (1, fitz.Rect(50, 610, 550, 710)), "6b": (1, fitz.Rect(50, 610, 550, 780)),
-                    "7a": (2, fitz.Rect(50, 60, 550, 180)),  "7b": (2, fitz.Rect(50, 60, 550, 320)),
-                    "8a": (2, fitz.Rect(50, 360, 550, 480)), "8b": (2, fitz.Rect(50, 360, 550, 630)),
-                    "9a": (3, fitz.Rect(50, 70, 550, 230)),  "9b": (3, fitz.Rect(50, 70, 550, 380)),
-                    "10": (3, fitz.Rect(50, 410, 550, 680)) 
-                }
-
-                # Create Smart-Cropped Images
-                q_images = {}
-                for q, (pg, rect) in crops.items():
-                    pix = doc_pdf[pg].get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
-                    temp_path = f"raw_{q}.png"
-                    pix.save(temp_path)
-                    
-                    # Apply the "Smart-Crop" (Trim white space)
-                    trimmed_img = trim_white_space(temp_path)
-                    final_path = f"smart_{q}.png"
-                    trimmed_img.save(final_path)
-                    q_images[q] = final_path
-                    os.remove(temp_path)
-
-                # Process Mapping
+                # Read Mapping
                 df_map = pd.read_csv(uploaded_mapping) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping)
                 dynamic_areas = []
                 for _, map_row in df_map.iterrows():
@@ -81,7 +93,9 @@ if st.button("Generate Feedback Pack"):
                     indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
                     dynamic_areas.append((topic, indices))
 
-                # Build Doc
+                # Generate Images (No more screenshots!)
+                q_images = {q: create_question_image(q, txt) for q, txt in questions_db.items()}
+
                 doc = Document()
                 for section in doc.sections:
                     section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
@@ -91,7 +105,7 @@ if st.button("Generate Feedback Pack"):
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
                     
-                    doc.add_heading(f"Feedback: {name}", 1)
+                    doc.add_heading(f"Feedback Report: {name}", 1)
                     table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
@@ -120,16 +134,18 @@ if st.button("Generate Feedback Pack"):
                         for q in reteach: 
                             doc.add_picture(q_images[q], width=Cm(14))
                             doc.add_paragraph()
+                    else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
-                target = BytesIO(); doc.save(target)
-                st.success("✅ Document Ready!")
-                st.download_button("📥 Download Feedback Pack", data=target.getvalue(), file_name="Feedback_Final.docx")
+                # Output
+                target = BytesIO()
+                doc.save(target)
+                st.success("✅ Feedback Pack Ready!")
+                st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Final.docx")
                 
                 # Cleanup
-                doc_pdf.close()
                 for f in os.listdir():
-                    if f.startswith("smart_") and f.endswith(".png"): os.remove(f)
+                    if f.startswith("q_") and f.endswith(".png"): os.remove(f)
 
         except Exception as e:
             st.error(f"Error: {e}")
