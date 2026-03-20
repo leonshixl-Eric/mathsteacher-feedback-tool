@@ -107,11 +107,29 @@ def create_question_image(q_code, text, font_size):
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
-    # --- NEW: Grab the Full Marks row (Assuming it is Row 3 in Excel / iloc[2] in Python) ---
+    # Grab the Full Marks row (Row 3 in Excel / iloc[2] in Python)
     full_marks_row = df_marks.iloc[2]
     
-    student_rows = df_marks.iloc[3:29].reset_index(drop=True)
-    percentage_row = df_marks.iloc[34]
+    # --- NEW: Dynamic Row Detection ---
+    percentage_idx = None
+    for i in range(len(df_marks)):
+        # Check the first column for the word "percentage"
+        cell_val = str(df_marks.iloc[i, 0]).strip().lower()
+        if 'percentage' in cell_val:
+            percentage_idx = i
+            break
+            
+    if percentage_idx is None:
+        raise ValueError("Could not find the 'Percentage' row. Ensure the first column of the bottom row contains the word 'Percentage'.")
+        
+    percentage_row = df_marks.iloc[percentage_idx]
+    
+    # Students are all the rows between Full Marks (index 3) and Percentage
+    student_rows = df_marks.iloc[3:percentage_idx].reset_index(drop=True)
+    
+    # Drop any completely blank rows just in case there are gaps
+    student_rows = student_rows.dropna(subset=[0]).reset_index(drop=True)
+    
     q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
@@ -154,7 +172,6 @@ def process_data(uploaded_csv, uploaded_mapping):
         if indices:
             dynamic_areas.append((topic, indices))
             
-    # Return the full_marks_row as well so the logic can use it
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
 def add_tight_picture(doc, img_path, width):
@@ -177,67 +194,68 @@ if preview_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
         st.warning("Please upload all three files to see a preview.")
     else:
-        with st.spinner("Generating preview..."):
-            # Unpack the new full_marks_row
-            student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+        try:
+            with st.spinner("Generating preview..."):
+                student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
 
-            first_student = None
-            for _, row in student_rows.iterrows():
-                if str(row[0]) != 'nan' and str(row[0]) != 'Name':
-                    first_student = row
-                    break
-            
-            if first_student is not None:
-                name = str(first_student[0])
+                first_student = None
+                for _, row in student_rows.iterrows():
+                    if str(row[0]) != 'nan' and str(row[0]) != 'Name':
+                        first_student = row
+                        break
                 
-                col_prev1, col_prev2 = st.columns([1, 8])
-                with col_prev1:
-                    if uploaded_logo is not None:
-                        st.image(uploaded_logo, width=50) 
-                with col_prev2:
-                    st.markdown(f"#### {unit_title} Feedback: **{name}** &nbsp; | &nbsp; Class: **{class_name}**")
-                
-                preview_table = []
-                student_ebi = []
-                for title, idxs in dynamic_areas:
-                    w, e = [], []
-                    for idx in idxs:
-                        score = pd.to_numeric(first_student[idx], errors='coerce')
-                        full_mark = pd.to_numeric(full_marks_row[idx], errors='coerce')
-                        
-                        # --- NEW RULE: Must equal full marks to go to WWW ---
-                        if pd.notna(score) and pd.notna(full_mark) and score >= full_mark:
-                            w.append(q_labels[idx])
-                        else: 
-                            e.append(q_labels[idx])
-                            student_ebi.append(q_labels[idx])
+                if first_student is not None:
+                    name = str(first_student[0])
+                    
+                    col_prev1, col_prev2 = st.columns([1, 8])
+                    with col_prev1:
+                        if uploaded_logo is not None:
+                            st.image(uploaded_logo, width=50) 
+                    with col_prev2:
+                        st.markdown(f"#### {unit_title} Feedback: **{name}** &nbsp; | &nbsp; Class: **{class_name}**")
+                    
+                    preview_table = []
+                    student_ebi = []
+                    for title, idxs in dynamic_areas:
+                        w, e = [], []
+                        for idx in idxs:
+                            score = pd.to_numeric(first_student[idx], errors='coerce')
+                            full_mark = pd.to_numeric(full_marks_row[idx], errors='coerce')
                             
-                    preview_table.append({"Area": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
-                
-                st.table(pd.DataFrame(preview_table))
-                
-                reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
-                personal = [q for q in student_ebi if q not in reteach]
-                
-                st.markdown("#### 🎯 Personal Corrections")
-                if personal:
-                    for q in personal:
-                        img_path = create_question_image(q, questions_db[q], selected_font_size)
-                        st.image(img_path)
-                        os.remove(img_path)
+                            if pd.notna(score) and pd.notna(full_mark) and score >= full_mark:
+                                w.append(q_labels[idx])
+                            else: 
+                                e.append(q_labels[idx])
+                                student_ebi.append(q_labels[idx])
+                                
+                        preview_table.append({"Area": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
+                    
+                    st.table(pd.DataFrame(preview_table))
+                    
+                    reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+                    personal = [q for q in student_ebi if q not in reteach]
+                    
+                    st.markdown("#### 🎯 Personal Corrections")
+                    if personal:
+                        for q in personal:
+                            img_path = create_question_image(q, questions_db[q], selected_font_size)
+                            st.image(img_path)
+                            os.remove(img_path)
+                    else:
+                        st.success("No personal corrections needed!")
+                    
+                    st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
+                    if reteach:
+                        for q in reteach:
+                            img_path = create_question_image(q, questions_db[q], selected_font_size)
+                            st.image(img_path)
+                            os.remove(img_path)
+                    else:
+                        st.success("No whole-class reteaching needed!")
                 else:
-                    st.success("No personal corrections needed!")
-                
-                st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
-                if reteach:
-                    for q in reteach:
-                        img_path = create_question_image(q, questions_db[q], selected_font_size)
-                        st.image(img_path)
-                        os.remove(img_path)
-                else:
-                    st.success("No whole-class reteaching needed!")
-            else:
-                st.error("Could not find any valid students in the CSV.")
+                    st.error("Could not find any valid students in the CSV.")
+        except Exception as e:
+            st.error(f"Error reading files: {e}")
 
 # --- 5. GENERATE LOGIC ---
 if generate_clicked:
@@ -252,7 +270,6 @@ if generate_clicked:
                     with open(logo_path, "wb") as f:
                         f.write(uploaded_logo.getbuffer())
 
-                # Unpack the new full_marks_row
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
 
@@ -303,7 +320,6 @@ if generate_clicked:
                             score = pd.to_numeric(row[idx], errors='coerce')
                             full_mark = pd.to_numeric(full_marks_row[idx], errors='coerce')
                             
-                            # --- NEW RULE: Must equal full marks to go to WWW ---
                             if pd.notna(score) and pd.notna(full_mark) and score >= full_mark:
                                 w.append(q_labels[idx])
                             else: 
@@ -409,5 +425,7 @@ if generate_clicked:
                 if logo_path and os.path.exists(logo_path):
                     os.remove(logo_path)
 
+        except ValueError as ve:
+            st.error(f"Spreadsheet Error: {ve}")
         except Exception as e:
             st.error(f"Error: {e}")
