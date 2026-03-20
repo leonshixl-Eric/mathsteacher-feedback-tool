@@ -1,5 +1,7 @@
 pandas
 python-docx>=1.1.0
+pymupdf
 matplotlib
 streamlit>=1.35.0
 openpyxl
+filetype
