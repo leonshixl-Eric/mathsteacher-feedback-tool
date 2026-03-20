@@ -6,8 +6,9 @@ import streamlit as st
 import pandas as pd
 from docx import Document
 from docx.shared import Cm, Pt
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
+# --- NEW: Import PowerPoint Tools ---
+from pptx import Presentation
+from pptx.util import Cm as PptxCm
 import os
 from io import BytesIO
 
@@ -53,6 +54,9 @@ with col_setting2:
     selected_threshold = st.slider("Reteach Threshold (%)", min_value=0, max_value=100, value=55, step=5)
 with col_setting3:
     selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.3, step=0.1)
+
+# --- NEW: PowerPoint Toggle ---
+generate_ppt = st.checkbox("📽️ Also generate Whole-Class Reteach PowerPoint (PPTX)", value=True)
 st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
@@ -227,7 +231,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions and formatting spacing...'):
+            with st.spinner(f'Reconstructing questions and generating files...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -246,6 +250,7 @@ if generate_clicked:
                 personal_img_width = Cm(min(12.0, available_width_cm))
                 reteach_img_width = Cm(min(14.0, available_width_cm))
 
+                # --- 1. BUILD THE WORD DOCUMENT ---
                 for section in doc.sections:
                     section.page_width = Cm(21.0)
                     section.page_height = Cm(29.7)
@@ -309,17 +314,63 @@ if generate_clicked:
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
-                target = BytesIO()
-                doc.save(target)
-                st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
+                target_docx = BytesIO()
+                doc.save(target_docx)
+
+                # --- 2. BUILD THE POWERPOINT (IF CHECKED) ---
+                target_pptx = None
+                global_reteach_qs = []
                 
-                # --- BULLETPROOF DYNAMIC FILE NAMING ---
+                if generate_ppt:
+                    # Find ALL questions that missed the class average threshold
+                    for title, idxs in dynamic_areas:
+                        for idx in idxs:
+                            q = q_labels[idx]
+                            if q not in global_reteach_qs:
+                                class_avg = pd.to_numeric(percentage_row[idx], errors='coerce')
+                                if class_avg <= threshold_decimal:
+                                    global_reteach_qs.append(q)
+                    
+                    # Sort them logically so they appear in order
+                    global_reteach_qs.sort(key=lambda x: q_labels.index(x))
+
+                    if len(global_reteach_qs) > 0:
+                        prs = Presentation()
+                        for q in global_reteach_qs:
+                            # Layout 5 is "Title Only"
+                            slide = prs.slides.add_slide(prs.slide_layouts[5])
+                            title_shape = slide.shapes.title
+                            title_shape.text = f"Whole-Class Reteaching: Question {q}"
+                            
+                            # Add picture cleanly centered
+                            img_path = q_images[q]
+                            pic_left = PptxCm(2)
+                            pic_top = PptxCm(4.5)
+                            pic_width = PptxCm(21.4) # Fits nicely on a standard slide width
+                            
+                            slide.shapes.add_picture(img_path, pic_left, pic_top, width=pic_width)
+                        
+                        target_pptx = BytesIO()
+                        prs.save(target_pptx)
+
+                # --- 3. SERVE DOWNLOAD BUTTONS ---
+                st.success(f"✅ Feedback Pack Ready!")
                 safe_class = str(class_name).strip().replace(" ", "_")
                 safe_unit = str(unit_title).strip().replace(" ", "_")
-                final_file_name = f"{safe_class}_{safe_unit}_Feedback.docx"
                 
-                st.download_button("📥 Download Document", data=target.getvalue(), file_name=final_file_name)
-                
+                # Show two buttons side-by-side if PPT is generated
+                if generate_ppt and target_pptx is not None:
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Feedback.docx")
+                    with col_dl2:
+                        st.download_button("📽️ Download PowerPoint", data=target_pptx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Reteach_Slides.pptx")
+                else:
+                    st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Feedback.docx")
+                    if generate_ppt and len(global_reteach_qs) == 0:
+                        st.info("No PowerPoint generated because the class scored above the reteach threshold on all topics!")
+
+                # Cleanup
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
                 if logo_path and os.path.exists(logo_path):
