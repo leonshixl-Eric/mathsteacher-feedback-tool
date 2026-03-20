@@ -313,8 +313,11 @@ if generate_clicked:
                 doc.save(target)
                 st.success(f"✅ Feedback Pack Ready! (Margins: {selected_margin}cm)")
                 
-                # --- NEW: DYNAMIC FILE NAMING ---
-                final_file_name = f"{class_name.replace(' ', '_')}_{unit_title.replace(' ', '_')}_Feedback.docx"
+                # --- BULLETPROOF DYNAMIC FILE NAMING ---
+                safe_class = str(class_name).strip().replace(" ", "_")
+                safe_unit = str(unit_title).strip().replace(" ", "_")
+                final_file_name = f"{safe_class}_{safe_unit}_Feedback.docx"
+                
                 st.download_button("📥 Download Document", data=target.getvalue(), file_name=final_file_name)
                 
                 for f in os.listdir():
