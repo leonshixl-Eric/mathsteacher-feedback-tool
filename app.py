@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg') # CRITICAL: Prevents the app from crashing on a web server
+matplotlib.use('Agg') # CRITICAL: Tells the server to draw images without a screen
 import matplotlib.pyplot as plt
 from docx import Document
 from docx.shared import Cm
@@ -62,23 +62,29 @@ def make_recon_img(q_code, text):
 # 3. GENERATION LOGIC
 if st.button("Generate Feedback Pack"):
     if not (uploaded_csv and uploaded_mapping):
-        st.error("Please upload the Marks and Mapping files.")
+        st.error("Please upload both the Marks and Mapping files.")
     else:
         try:
             with st.spinner('Generating report...'):
+                # 1. Create Images
                 snippet_imgs = {q: make_recon_img(q, txt) for q, txt in questions_text.items()}
+                
+                # 2. Load Marks
                 df_marks = load_data(uploaded_csv)
                 student_rows = df_marks.iloc[3:29].reset_index(drop=True)
                 percentage_row = df_marks.iloc[34]
                 q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
+                # 3. Load Mapping
                 df_map = load_data(uploaded_mapping)
                 dynamic_areas = []
                 for _, map_row in df_map.iterrows():
-                    topic, qs = map_row.iloc[0], str(map_row.iloc[1]).split(',')
+                    topic = map_row.iloc[0]
+                    qs = str(map_row.iloc[1]).split(',')
                     indices = [q_labels.index(q.strip()) for q in qs if q.strip() in q_labels]
                     dynamic_areas.append((topic, indices))
 
+                # 4. Build Document
                 doc = Document()
                 for section in doc.sections:
                     section.top_margin, section.bottom_margin = Cm(0.5), Cm(0.5)
@@ -87,6 +93,7 @@ if st.button("Generate Feedback Pack"):
                 for _, row in student_rows.iterrows():
                     name = str(row[0])
                     if name == 'nan' or name == 'Name': continue
+                    
                     doc.add_heading(f"Feedback: {name}", 1)
                     table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
                     hdr = table.rows[0].cells
@@ -98,29 +105,43 @@ if st.button("Generate Feedback Pack"):
                         w, e = [], []
                         for idx in idxs:
                             score = pd.to_numeric(row[idx], errors='coerce')
-                            if pd.notnull(score) and score > 0: w.append(q_labels[idx])
-                            else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                            if pd.notnull(score) and score > 0:
+                                w.append(q_labels[idx])
+                            else:
+                                e.append(q_labels[idx])
+                                student_ebi.append(q_labels[idx])
                         r = table.add_row().cells
-                        r[0].text, r[1].text, r[2].text = str(topic), ", ".join(w), ", ".join(e)
+                        r[0].text, r[1].text, r[2].text = str(title), ", ".join(w), ", ".join(e)
 
+                    # Reteach vs Personal (55% threshold)
                     reteach = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= 0.55]
                     personal = [q for q in student_ebi if q not in reteach]
                     
                     if personal:
                         doc.add_heading("Personal correction", 2)
-                        for q in personal: doc.add_picture(snippet_imgs[q], width=Cm(12))
+                        for q in personal:
+                            doc.add_picture(snippet_imgs[q], width=Cm(12))
+                    
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
                     if reteach:
                         for q in reteach: 
                             doc.add_picture(snippet_imgs[q], width=Cm(14))
                             doc.add_paragraph()
+                    else:
+                        doc.add_paragraph("Mastered all class focus areas.")
                     doc.add_page_break()
 
-                target = BytesIO(); doc.save(target)
-                st.success("✅ Done!")
-                st.download_button("📥 Download Pack", data=target.getvalue(), file_name="Feedback.docx")
+                # 5. Output
+                target = BytesIO()
+                doc.save(target)
+                st.success("✅ Done! Your feedback pack is ready.")
+                st.download_button("📥 Download Document", data=target.getvalue(), file_name="Feedback_Report.docx")
+                
+                # Cleanup temp images
                 for f in os.listdir():
-                    if f.startswith("recon_") and f.endswith(".png"): os.remove(f)
+                    if f.startswith("recon_") and f.endswith(".png"):
+                        os.remove(f)
+
         except Exception as e:
             st.error(f"Error: {e}")
