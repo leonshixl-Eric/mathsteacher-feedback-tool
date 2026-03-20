@@ -6,9 +6,12 @@ import streamlit as st
 import pandas as pd
 from docx import Document
 from docx.shared import Cm, Pt
-# --- NEW: Import PowerPoint Tools ---
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+# --- NEW: Import Zipfile and PowerPoint Font Tools ---
 from pptx import Presentation
-from pptx.util import Cm as PptxCm
+from pptx.util import Cm as PptxCm, Pt as PptxPt
+import zipfile
 import os
 from io import BytesIO
 
@@ -55,7 +58,6 @@ with col_setting2:
 with col_setting3:
     selected_margin = st.slider("Page Margin (cm)", min_value=0.5, max_value=3.0, value=1.3, step=0.1)
 
-# --- NEW: PowerPoint Toggle ---
 generate_ppt = st.checkbox("📽️ Also generate Whole-Class Reteach PowerPoint (PPTX)", value=True)
 st.markdown("---")
 
@@ -322,7 +324,6 @@ if generate_clicked:
                 global_reteach_qs = []
                 
                 if generate_ppt:
-                    # Find ALL questions that missed the class average threshold
                     for title, idxs in dynamic_areas:
                         for idx in idxs:
                             q = q_labels[idx]
@@ -331,42 +332,63 @@ if generate_clicked:
                                 if class_avg <= threshold_decimal:
                                     global_reteach_qs.append(q)
                     
-                    # Sort them logically so they appear in order
                     global_reteach_qs.sort(key=lambda x: q_labels.index(x))
 
                     if len(global_reteach_qs) > 0:
                         prs = Presentation()
                         for q in global_reteach_qs:
-                            # Layout 5 is "Title Only"
                             slide = prs.slides.add_slide(prs.slide_layouts[5])
                             title_shape = slide.shapes.title
                             title_shape.text = f"Whole-Class Reteaching: Question {q}"
                             
-                            # Add picture cleanly centered
+                            # --- NEW: Force the title font to be exactly 32pt ---
+                            for paragraph in title_shape.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    run.font.size = PptxPt(32)
+                            
                             img_path = q_images[q]
                             pic_left = PptxCm(2)
                             pic_top = PptxCm(4.5)
-                            pic_width = PptxCm(21.4) # Fits nicely on a standard slide width
+                            pic_width = PptxCm(21.4) 
                             
                             slide.shapes.add_picture(img_path, pic_left, pic_top, width=pic_width)
                         
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
 
-                # --- 3. SERVE DOWNLOAD BUTTONS ---
-                st.success(f"✅ Feedback Pack Ready!")
+                # --- 3. BUNDLE FILES INTO A ZIP (DOWNLOAD ALL) ---
                 safe_class = str(class_name).strip().replace(" ", "_")
                 safe_unit = str(unit_title).strip().replace(" ", "_")
+                docx_name = f"{safe_class}_{safe_unit}_Feedback.docx"
+                pptx_name = f"{safe_class}_{safe_unit}_Reteach_Slides.pptx"
+                zip_name = f"{safe_class}_{safe_unit}_All_Files.zip"
                 
-                # Show two buttons side-by-side if PPT is generated
+                zip_buffer = BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    zip_file.writestr(docx_name, target_docx.getvalue())
+                    if generate_ppt and target_pptx is not None:
+                        zip_file.writestr(pptx_name, target_pptx.getvalue())
+                zip_buffer.seek(0)
+
+                # --- 4. SERVE DOWNLOAD BUTTONS ---
+                st.success(f"✅ Feedback Pack Ready!")
+                
+                # Show individual buttons and the ZIP button if PPT is generated
                 if generate_ppt and target_pptx is not None:
+                    col_dl1, col_dl2, col_dl3 = st.columns(3)
+                    with col_dl1:
+                        st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=docx_name)
+                    with col_dl2:
+                        st.download_button("📽️ Download PPTX", data=target_pptx.getvalue(), file_name=pptx_name)
+                    with col_dl3:
+                        st.download_button("📦 Download All (ZIP)", data=zip_buffer.getvalue(), file_name=zip_name, type="primary")
+                else:
                     col_dl1, col_dl2 = st.columns(2)
                     with col_dl1:
-                        st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Feedback.docx")
+                        st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=docx_name)
                     with col_dl2:
-                        st.download_button("📽️ Download PowerPoint", data=target_pptx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Reteach_Slides.pptx")
-                else:
-                    st.download_button("📥 Download Word Doc", data=target_docx.getvalue(), file_name=f"{safe_class}_{safe_unit}_Feedback.docx")
+                        st.download_button("📦 Download All (ZIP)", data=zip_buffer.getvalue(), file_name=zip_name, type="primary")
+                    
                     if generate_ppt and len(global_reteach_qs) == 0:
                         st.info("No PowerPoint generated because the class scored above the reteach threshold on all topics!")
 
