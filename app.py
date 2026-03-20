@@ -98,8 +98,8 @@ if st.button("Generate Feedback Pack"):
 
                 doc = Document()
                 for section in doc.sections:
-                    section.top_margin, section.bottom_margin = Cm(0.7), Cm(0.7)
-                    section.left_margin, section.right_margin = Cm(0.7), Cm(0.7)
+                    section.top_margin, section.bottom_margin = Cm(0.9), Cm(0.9)
+                    section.left_margin, section.right_margin = Cm(0.9), Cm(0.9)
 
                 for _, row in student_rows.iterrows():
                     name = str(row[0])
@@ -109,7 +109,7 @@ if st.button("Generate Feedback Pack"):
                     table = doc.add_table(rows=1, cols=3); table.style = 'Table Grid'
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
-                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(14), Cm(2.25), Cm(2.25)
+                    table.columns[0].width, table.columns[1].width, table.columns[2].width = Cm(14), Cm(1.25), Cm(1.25)
                     
                     student_ebi = []
                     for title, idxs in dynamic_areas:
