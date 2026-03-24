@@ -107,13 +107,10 @@ def create_question_image(q_code, text, font_size):
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
-    # Grab the Full Marks row (Row 3 in Excel / iloc[2] in Python)
     full_marks_row = df_marks.iloc[2]
     
-    # --- NEW: Dynamic Row Detection ---
     percentage_idx = None
     for i in range(len(df_marks)):
-        # Check the first column for the word "percentage"
         cell_val = str(df_marks.iloc[i, 0]).strip().lower()
         if 'percentage' in cell_val:
             percentage_idx = i
@@ -124,13 +121,11 @@ def process_data(uploaded_csv, uploaded_mapping):
         
     percentage_row = df_marks.iloc[percentage_idx]
     
-    # Students are all the rows between Full Marks (index 3) and Percentage
     student_rows = df_marks.iloc[3:percentage_idx].reset_index(drop=True)
-    
-    # Drop any completely blank rows just in case there are gaps
     student_rows = student_rows.dropna(subset=[0]).reset_index(drop=True)
     
-    q_labels = ["", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
+    # --- UPDATED: Column A is Surname, Column B is Forename ---
+    q_labels = ["Surname", "Forename", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
 
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
     
@@ -200,12 +195,17 @@ if preview_clicked:
 
                 first_student = None
                 for _, row in student_rows.iterrows():
-                    if str(row[0]) != 'nan' and str(row[0]) != 'Name':
+                    # Check that the surname isn't blank or a header row
+                    cell_text = str(row[0]).lower()
+                    if cell_text != 'nan' and 'name' not in cell_text and 'surname' not in cell_text:
                         first_student = row
                         break
                 
                 if first_student is not None:
-                    name = str(first_student[0])
+                    # --- UPDATED: Construct name from Surname (Col 0) and Forename (Col 1) ---
+                    lname = str(first_student[0]).strip()
+                    fname = str(first_student[1]).strip()
+                    name = f"{fname} {lname}".strip() if fname.lower() != 'nan' else lname
                     
                     col_prev1, col_prev2 = st.columns([1, 8])
                     with col_prev1:
@@ -282,7 +282,6 @@ if generate_clicked:
                 personal_img_width = Cm(min(12.0, available_width_cm))
                 reteach_img_width = Cm(min(14.0, available_width_cm))
 
-                # --- 1. BUILD THE WORD DOCUMENT ---
                 for section in doc.sections:
                     section.page_width = Cm(21.0)
                     section.page_height = Cm(29.7)
@@ -290,8 +289,13 @@ if generate_clicked:
                     section.left_margin, section.right_margin = Cm(selected_margin), Cm(selected_margin)
 
                 for _, row in student_rows.iterrows():
-                    name = str(row[0])
-                    if name == 'nan' or name == 'Name': continue
+                    # --- UPDATED: Extract Surname and Forename ---
+                    lname = str(row[0]).strip()
+                    fname = str(row[1]).strip()
+                    
+                    cell_text = lname.lower()
+                    if cell_text == 'nan' or 'surname' in cell_text or 'name' in cell_text: continue
+                    name = f"{fname} {lname}".strip() if fname.lower() != 'nan' else lname
                     
                     header_p = doc.add_paragraph()
                     header_p.paragraph_format.space_after = Cm(0.3)
@@ -354,7 +358,6 @@ if generate_clicked:
                 target_docx = BytesIO()
                 doc.save(target_docx)
 
-                # --- 2. BUILD THE POWERPOINT ---
                 target_pptx = None
                 global_reteach_qs = []
                 
@@ -384,7 +387,6 @@ if generate_clicked:
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
 
-                # --- 3. BUNDLE FILES INTO A ZIP ---
                 safe_class = str(class_name).strip().replace(" ", "_")
                 safe_unit = str(unit_title).strip().replace(" ", "_")
                 docx_name = f"{safe_class}_{safe_unit}_Feedback.docx"
@@ -398,7 +400,6 @@ if generate_clicked:
                         zip_file.writestr(pptx_name, target_pptx.getvalue())
                 zip_buffer.seek(0)
 
-                # --- 4. SERVE DOWNLOAD BUTTONS ---
                 st.success(f"✅ Feedback Pack Ready!")
                 
                 if generate_ppt and target_pptx is not None:
@@ -419,7 +420,6 @@ if generate_clicked:
                     if generate_ppt and len(global_reteach_qs) == 0:
                         st.info("No PowerPoint generated because the class scored above the reteach threshold on all topics!")
 
-                # Cleanup
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
                 if logo_path and os.path.exists(logo_path):
