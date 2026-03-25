@@ -14,7 +14,7 @@ import re
 from io import BytesIO
 from PIL import Image
 
-# --- MODULE FIXES ---
+# --- FIX FOR PYTHON 3.13 & IMAGE HANDLING ---
 try:
     import imghdr
 except ImportError:
@@ -26,28 +26,28 @@ except ImportError:
     sys.modules['imghdr'] = MockImghdr()
 
 try:
-    import fitz 
+    import fitz # PyMuPDF
 except ImportError:
-    st.error("PyMuPDF (pymupdf) not found in requirements.txt")
+    st.error("PyMuPDF not found. Please ensure 'pymupdf' is in requirements.txt")
 
 from streamlit_cropper import st_cropper 
 
 st.set_page_config(page_title="Maths Feedback Pro", layout="wide", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Draw a box to crop questions. The app automatically links sub-questions to instructions and skips absent students.")
+st.write("Draw a box to crop questions. Change page numbers to navigate the PDF.")
 
 # --- 1. UPLOADERS ---
 col_u1, col_u2, col_u3 = st.columns(3)
 with col_u1:
-    uploaded_csv = st.file_uploader("1. Marks (CSV/Excel)", type=["csv", "xlsx"])
+    uploaded_csv = st.file_uploader("1. Upload Marks (CSV/Excel)", type=["csv", "xlsx"])
 with col_u2:
-    uploaded_pdf = st.file_uploader("2. Exam PDF", type="pdf")
+    uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF", type="pdf")
 with col_u3:
-    uploaded_mapping = st.file_uploader("3. Topic Map (CSV/Excel)", type=["csv", "xlsx"])
+    uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV/Excel)", type=["csv", "xlsx"])
 
 # --- SIDEBAR SETTINGS ---
-st.sidebar.header("📝 Document Branding")
+st.sidebar.header("📝 Branding & Settings")
 unit_title = st.sidebar.text_input("Unit Title", value="Algebraic Manipulation")
 class_name = st.sidebar.text_input("Class Name", value="9y2")
 uploaded_logo = st.sidebar.file_uploader("Upload Logo", type=["png", "jpg"])
@@ -73,7 +73,6 @@ def process_data(csv, mapping):
     perc_row = df.iloc[perc_idx]
     full_marks = df.iloc[2]
     
-    # FILTER ABSENT STUDENTS (Must have at least one mark in question columns)
     students = df.iloc[3:perc_idx].dropna(subset=[0, 1], how='all')
     students = students[students.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
     
@@ -97,23 +96,53 @@ def process_data(csv, mapping):
         
     return students, perc_row, full_marks, q_labels, dyn_areas
 
-def get_instruction(pdf_bytes, q_code):
-    m = re.match(r"(\d+)([a-zA-Z]*)", q_code)
-    if not m or not fitz: return f"Question {q_code}"
-    num = m.group(1)
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        for page in doc:
-            for b in page.get_text("blocks"):
-                text = b[4].strip()
-                pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*([A-Za-z].*)"
-                match = re.search(pat, text, re.IGNORECASE)
-                if match:
-                    instr = match.group(1).split('\n')[0].strip()
-                    instr = re.sub(r'\s*\[\d+.*\]', '', instr, flags=re.IGNORECASE)
-                    return f"Question {q_code}) {instr}"
-    except: pass
-    return f"Question {q_code}"
+def scan_pdf_for_metadata(pdf_bytes, required_qs):
+    """One-pass scanner to find BOTH the page number and the instruction for each question."""
+    pages_dict = {}
+    titles_dict = {}
+    page_count = 1
+    
+    if fitz:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page_count = max(1, len(doc))
+            
+            for page_num in range(len(doc)):
+                text = doc[page_num].get_text("text")
+                clean_text = text.lower().replace(" ", "")
+                
+                for q in required_qs:
+                    m = re.match(r"(\d+)([a-zA-Z]*)", q)
+                    if not m: continue
+                    num, let = m.groups()
+                    
+                    # 1. Find the Page
+                    if q not in pages_dict:
+                        if let:
+                            if f"{num}{let})" in clean_text or f"{num}({let})" in clean_text or f"{num}.{let}" in clean_text:
+                                pages_dict[q] = page_num
+                        else:
+                            if f"question{num}" in clean_text or f"q{num}" in clean_text or f"\n{num})" in clean_text:
+                                pages_dict[q] = page_num
+                                
+                    # 2. Find the Instruction Title
+                    if q not in titles_dict:
+                        pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*([A-Za-z].*)"
+                        for line in text.split('\n'):
+                            match = re.search(pat, line.strip(), re.IGNORECASE)
+                            if match:
+                                instr = match.group(1).strip()
+                                instr = re.sub(r'\s*\[\d+.*\]', '', instr, flags=re.IGNORECASE)
+                                titles_dict[q] = f"Question {q}) {instr}"
+        except:
+            pass
+            
+    # Fallbacks if scanner missed anything
+    for q in required_qs:
+        if q not in pages_dict: pages_dict[q] = 0
+        if q not in titles_dict: titles_dict[q] = f"Question {q}"
+        
+    return pages_dict, titles_dict, page_count
 
 def get_page_img(pdf_bytes, p_num):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -123,8 +152,10 @@ def get_page_img(pdf_bytes, p_num):
 
 # --- 3. APP FLOW ---
 if "step" not in st.session_state: st.session_state.step = 1
+if "q_pages" not in st.session_state: st.session_state.q_pages = {}
 if "q_titles" not in st.session_state: st.session_state.q_titles = {}
 if "saved_crops" not in st.session_state: st.session_state.saved_crops = {}
+if "pdf_pages" not in st.session_state: st.session_state.pdf_pages = 1
 
 if uploaded_csv and uploaded_pdf and uploaded_mapping:
     students, perc_row, full_marks, q_labels, dyn_areas = process_data(uploaded_csv, uploaded_mapping)
@@ -132,32 +163,54 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
     pdf_b = uploaded_pdf.getvalue()
 
     if st.session_state.step == 1:
-        if st.button("🚀 Start Cropping Process", use_container_width=True):
-            for q in req_qs: st.session_state.q_titles[q] = get_instruction(pdf_b, q)
-            st.session_state.step = 2
-            st.rerun()
+        if st.button("🚀 Scan PDF & Open Cropper", use_container_width=True):
+            with st.spinner("Analyzing PDF pages and extracting instructions..."):
+                pages_dict, titles_dict, total_pages = scan_pdf_for_metadata(pdf_b, req_qs)
+                st.session_state.q_pages = pages_dict
+                st.session_state.q_titles = titles_dict
+                st.session_state.pdf_pages = total_pages
+                st.session_state.step = 2
+                st.rerun()
 
     if st.session_state.step == 2:
         st.success(f"Loaded {len(req_qs)} questions. Save each crop below.")
         
         for q in req_qs:
-            with st.expander(f"Crop Area for Question {q}", expanded=True):
-                st.session_state.q_titles[q] = st.text_input(f"Label for {q}", value=st.session_state.q_titles.get(q, ""), key=f"t_{q}")
-                col_a, col_b = st.columns([2, 1])
-                with col_a:
-                    p_num = st.number_input(f"Page (Question {q})", 1, 100, 1, key=f"p_input_{q}") - 1
-                    img = get_page_img(pdf_b, p_num)
-                    # Unique key per page ensures the image refreshes
-                    cropped = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key=f"cropper_{q}_pg_{p_num}")
-                with col_b:
-                    st.write("Preview:")
+            st.markdown(f"### ✂️ Question {q}")
+            
+            # 1. Editable Label
+            st.session_state.q_titles[q] = st.text_input(f"Document Label for {q}", value=st.session_state.q_titles.get(q, ""), key=f"t_{q}")
+            
+            # 2. Safely initialize the Page Number Widget state so it maps correctly
+            widget_key = f"page_input_{q}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = st.session_state.q_pages.get(q, 0) + 1
+            
+            col_a, col_b = st.columns([2, 1])
+            
+            with col_a:
+                # Page Selector
+                p_val = st.number_input("Select Page", min_value=1, max_value=st.session_state.pdf_pages, key=widget_key)
+                page_idx = p_val - 1
+                
+                st.caption(f"👀 Now viewing Page {p_val}")
+                
+                # Fetch image and apply dynamic key to force unmount on page change
+                img = get_page_img(pdf_b, page_idx)
+                cropper_key = f"cropper_{q}_pg_{page_idx}"
+                cropped = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key=cropper_key)
+                
+            with col_b:
+                st.write("Live Preview:")
+                if cropped:
                     st.image(cropped, use_container_width=True)
                     if st.button(f"✅ Save Crop for {q}", key=f"save_{q}"):
                         buf = BytesIO()
                         cropped.save(buf, format="PNG")
                         st.session_state.saved_crops[q] = buf.getvalue()
-                        st.toast(f"Question {q} Saved!")
-            st.markdown("---")
+                        st.toast(f"Question {q} Saved!", icon="✅")
+            
+            st.divider()
 
         if st.button("📦 Generate All Documents (Word & PPTX)", type="primary", use_container_width=True):
             if len(st.session_state.saved_crops) < len(req_qs):
@@ -167,7 +220,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                 doc = Document()
                 prs = Presentation()
                 
-                # Setup Word Margins
                 for section in doc.sections:
                     section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Cm(page_margin)
 
@@ -179,7 +231,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                 for i, (_, s_row) in enumerate(students.iterrows()):
                     name = f"{s_row[1]} {s_row[0]}"
                     
-                    # WORD DOC GENERATION
                     head = doc.add_paragraph()
                     if logo_p: head.add_run().add_picture(logo_p, width=Cm(1.5))
                     title = head.add_run(f"  {unit_title} Feedback: {name} | Class: {class_name}")
@@ -203,7 +254,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = t_name, ", ".join(w), ", ".join(e)
 
-                    # Personal Corrections Logic
                     reteach_qs = [q for q in s_ebi if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal_qs = [q for q in s_ebi if q not in reteach_qs]
                     
@@ -224,7 +274,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     doc.add_page_break()
                     progress_bar.progress((i + 1) / len(students))
 
-                # PPTX GENERATION (Global Reteach Slides)
                 global_reteach = [q for q in q_labels[2:] if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                 for q in global_reteach:
                     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -233,7 +282,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     img_data = BytesIO(st.session_state.saved_crops[q])
                     slide.shapes.add_picture(img_data, PptxCm(2), PptxCm(3), width=PptxCm(21))
 
-                # SAVE & ZIP
                 word_buf, ppt_buf, zip_buf = BytesIO(), BytesIO(), BytesIO()
                 doc.save(word_buf)
                 prs.save(ppt_buf)
