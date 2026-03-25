@@ -1,8 +1,8 @@
+streamlit
 pandas
-python-docx>=1.1.0
-pymupdf
-matplotlib
-streamlit>=1.35.0
 openpyxl
-filetype
+python-docx
 python-pptx
+PyMuPDF
+Pillow
+matplotlib
