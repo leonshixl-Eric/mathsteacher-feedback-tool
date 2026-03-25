@@ -34,7 +34,8 @@ st.write("Generating structured feedback with full labels and reconstructed math
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
-uploaded_mapping = st.file_uploader("2. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
+uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Reference)", type="pdf")
+uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 # --- BRANDING SETTINGS ---
 st.markdown("---")
@@ -177,8 +178,8 @@ with col2:
 
 # --- 4. LOGIC ---
 if preview_clicked or generate_clicked:
-    if not (uploaded_csv and uploaded_mapping):
-        st.error("Please upload the Marks and Mapping files.")
+    if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
+        st.error("Please upload all three files (Marks, PDF, and Mapping).")
     else:
         try:
             student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
@@ -298,11 +299,11 @@ if preview_clicked or generate_clicked:
                         zip_buffer = BytesIO()
                         safe_class = str(class_name).replace(" ", "_")
                         with zipfile.ZipFile(zip_buffer, "w") as z:
-                            z.writestr(f"{safe_class}_Reports.docx", target_docx.getvalue())
+                            z.writestr(f"{safe_class}_Feedback_Reports.docx", target_docx.getvalue())
                             if global_reteach:
                                 z.writestr(f"{safe_class}_Reteach_Slides.pptx", target_pptx.getvalue())
                         
-                        st.success(f"✅ Feedback generated for {len(student_rows)} students.")
+                        st.success(f"✅ Success! Feedback generated for {len(student_rows)} students.")
                         st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_class}_Pack.zip", type="primary")
 
                         if logo_path and os.path.exists(logo_path): os.remove(logo_path)
