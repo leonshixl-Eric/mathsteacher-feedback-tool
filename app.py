@@ -14,6 +14,8 @@ import zipfile
 import os
 import re
 from io import BytesIO
+# --- NEW: Import Image Libraries for Auto-Cropping ---
+from PIL import Image, ImageChops
 
 # --- FIX FOR PYTHON 3.13 & PYMUPDF ---
 try:
@@ -88,7 +90,7 @@ def create_question_image(q_code, text, font_size):
     return img_name
 
 def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
-    """Scans the PDF and literally crops a picture of the exact question."""
+    """Scans the PDF, screenshots the question, and aggressively crops white space."""
     q_images = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
@@ -102,14 +104,12 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
         pdf_file.seek(0)
         
         q_locations = {}
-        
-        # --- NEW: Persist the current question number ACROSS pages! ---
         current_num = None 
         
         for page_num in range(len(doc)):
             page = doc[page_num]
             blocks = page.get_text("blocks")
-            blocks.sort(key=lambda b: b[1]) # Sort blocks top to bottom
+            blocks.sort(key=lambda b: b[1]) 
             
             page_qs = []
             
@@ -117,7 +117,6 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                 text = b[4].strip()
                 if not text: continue
                 
-                # Update current main question number if found (e.g. "2.") anywhere at the start of a line
                 num_match = re.search(r"(?:^|\n)\s*(?:Question\s+|Q)?(\d+)(?:[\)\.\-\s]|$)", text, re.IGNORECASE)
                 if num_match:
                     current_num = num_match.group(1)
@@ -130,50 +129,61 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                     if not m: continue
                     num, let = m.groups()
                     
-                    # Full match check (e.g., "1a", "1(a)") searching deeply inside paragraphs
                     full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?{num}\s*[\(\.\-]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
                     
                     if full_pat.search(text):
                         page_qs.append((q, b[1]))
                         current_num = num
                         break
-                    # Sub-question check (e.g., "b)") relying on our persistent memory of the current number!
                     elif current_num == num and let:
                         let_pat = re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
                         if let_pat.search(text):
                             page_qs.append((q, b[1]))
                             break
 
-            # Calculate crop height based on where the next question starts
             for i in range(len(page_qs)):
                 q_code, y0 = page_qs[i]
                 if i < len(page_qs) - 1:
-                    y1 = page_qs[i+1][1] - 10 # Stop right before the next question
+                    y1 = page_qs[i+1][1] - 10 
                 else:
-                    y1 = y0 + 160 # Default height for the last question on the page
+                    y1 = y0 + 160 
                     if y1 > page.rect.height:
                         y1 = page.rect.height
                 
-                # Ensure a minimum height so small questions don't get squashed
                 if y1 - y0 < 40:
                     y1 = y0 + 80
                     
                 q_locations[q_code] = (page_num, max(0, y0 - 15), min(page.rect.height, y1))
         
-        # Take the actual high-res screenshots
         for q_code, (page_num, y0, y1) in q_locations.items():
             page = doc[page_num]
             rect = fitz.Rect(0, y0, page.rect.width, y1)
-            # 300 DPI crop for high-fidelity zoom
             pix = page.get_pixmap(clip=rect, dpi=300)
             img_name = f"q_{q_code}.png"
             pix.save(img_name)
+            
+            # --- NEW: AUTO-TRIM WHITE SPACE ---
+            try:
+                im = Image.open(img_name)
+                # Create a pure white background image
+                bg = Image.new(im.mode, im.size, (255, 255, 255))
+                # Find the difference between our screenshot and the pure white background
+                diff = ImageChops.difference(im, bg)
+                bbox = diff.getbbox()
+                if bbox:
+                    # Add 15 pixels of breathing room around the ink
+                    pad = 15 
+                    bbox = (max(0, bbox[0]-pad), max(0, bbox[1]-pad), min(im.size[0], bbox[2]+pad), min(im.size[1], bbox[3]+pad))
+                    im = im.crop(bbox)
+                    im.save(img_name)
+            except Exception as e:
+                pass # If trim fails, just use the original image
+                
             q_images[q_code] = img_name
             
     except Exception as e:
         st.warning(f"Error reading PDF: {e}")
         
-    # Safe fallback if a question couldn't be located automatically
     for q in valid_qs:
         if q not in q_images:
             q_images[q] = create_question_image(q, f"Question {q}\n\n(Could not automatically crop from PDF.\nPlease refer to original paper.)", font_size)
@@ -261,12 +271,23 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
-def add_tight_picture(doc, img_path, width):
+def add_tight_picture(doc, img_path, max_width_cm):
+    """Adds image to word document, using Smart Scaling to prevent huge stretched text."""
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_before = Cm(0.3)
     paragraph.paragraph_format.space_after = Cm(0.3)
     run = paragraph.add_run()
-    run.add_picture(img_path, width=width)
+    
+    # Calculate physical width to match real paper scale
+    try:
+        with Image.open(img_path) as img:
+            dpi = 300.0  # We generated it at 300 DPI
+            img_width_cm = (img.size[0] / dpi) * 2.54
+            final_width = min(img_width_cm, max_width_cm.inches * 2.54) # Cap it at page margins
+    except:
+        final_width = 12.0 # Fallback
+        
+    run.add_picture(img_path, width=Cm(final_width))
     return paragraph
 
 # --- 3. BUTTON LAYOUT ---
@@ -282,10 +303,8 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         try:
-            with st.spinner("Taking screenshots from PDF..."):
+            with st.spinner("Taking tight screenshots from PDF..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
-                
-                # Pre-generate all image crops
                 q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 first_student = None
@@ -357,7 +376,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Cropping PDF and generating files...'):
+            with st.spinner(f'Auto-cropping PDF and generating files...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -365,12 +384,9 @@ if generate_clicked:
                         f.write(uploaded_logo.getbuffer())
 
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
-                
-                # Take actual screenshots from the PDF!
                 q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 doc = Document()
-                
                 available_width_cm = 21.0 - (2 * selected_margin)
                 area_col_width = available_width_cm - 7.0 
                 col_widths = [Cm(area_col_width), Cm(3.5), Cm(3.5)]
@@ -437,7 +453,7 @@ if generate_clicked:
                         h_pers.paragraph_format.space_before = Cm(0)
                         
                         for q in personal:
-                            add_tight_picture(doc, q_images[q], width=personal_img_width)
+                            add_tight_picture(doc, q_images[q], personal_img_width)
 
                     doc.add_page_break()
                     
@@ -446,7 +462,7 @@ if generate_clicked:
                     
                     if reteach:
                         for q in reteach: 
-                            add_tight_picture(doc, q_images[q], width=reteach_img_width)
+                            add_tight_picture(doc, q_images[q], reteach_img_width)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
@@ -473,11 +489,19 @@ if generate_clicked:
                             slide = prs.slides.add_slide(prs.slide_layouts[6])
                             
                             img_path = q_images[q]
-                            pic_left = PptxCm(2)
-                            pic_top = PptxCm(2.5) 
-                            pic_width = PptxCm(21.4) 
                             
-                            slide.shapes.add_picture(img_path, pic_left, pic_top, width=pic_width)
+                            # --- PPTX Smart Image Sizing ---
+                            try:
+                                with Image.open(img_path) as img:
+                                    aspect = img.size[0] / img.size[1]
+                            except:
+                                aspect = 2.0
+                                
+                            # If it's a wide snippet, stretch width. If it's a tall block, restrict height.
+                            if aspect > 1.5:
+                                slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), width=PptxCm(21.4))
+                            else:
+                                slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), height=PptxCm(13.0))
                         
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
