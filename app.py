@@ -119,7 +119,8 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                 text = str(b[4]).strip()
                 if not text: continue
                 
-                num_match = re.search(r"(?:^|\n)\s*(?:Question\s+|Q)?(\d+)(?:[\)\.\-\s]|$)", text, re.IGNORECASE)
+                # --- NEW: Persistently track the main question number (e.g. "2") ---
+                num_match = re.match(r"^\s*(?:Question\s+|Q)?(\d+)", text, re.IGNORECASE)
                 if num_match:
                     current_num = num_match.group(1)
                     
@@ -143,7 +144,7 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                             page_qs.append((q, idx, b[1]))
                             break
 
-            # --- NEW: Ultra-Tight Crop Logic ---
+            # Calculate tight crop bounds
             for i in range(len(page_qs)):
                 q_code, start_idx, y0 = page_qs[i]
                 end_idx = page_qs[i+1][1] if i < len(page_qs) - 1 else len(blocks)
@@ -154,25 +155,26 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                     bk = blocks[k]
                     gap = bk[1] - bottom_y
                     
-                    # 1. If there is a huge vertical gap (>60 points), it means we've hit the blank answering space. STOP.
-                    if gap > 60:
+                    # --- NEW: Relaxed gap threshold to 85 to prevent diagram cut-offs ---
+                    if gap > 85:
                         break
                         
-                    # 2. Check if the block is just a marks indicator at the bottom (e.g., "[2]" or "Total 3 marks")
                     bk_text = str(bk[4]).strip() if bk[6] == 0 else ""
                     mark_pat = r"^\[\d+\]$|^\(\d+\s*marks?\)$|^\d+\s*marks?$|^\(?total.*?\d+\s*marks?\)?$"
                     if bk_text and re.match(mark_pat, bk_text, re.IGNORECASE):
-                        break # Exclude the marks indicator and STOP.
+                        break 
                         
                     bottom_y = max(bottom_y, bk[3])
                 
-                y1 = bottom_y + 10 # Add just a tiny bit of padding below the last line of text
+                # --- NEW: Added extra safe padding to the bottom cut ---
+                y1 = bottom_y + 25 
                 
-                if y1 - y0 < 30:
-                    y1 = y0 + 40
+                if y1 - y0 < 35:
+                    y1 = y0 + 50
                     
                 q_locations[q_code] = (page_num, max(0, y0 - 15), min(page.rect.height, y1))
         
+        # Capture and clean the images
         for q_code, (page_num, y0, y1) in q_locations.items():
             page = doc[page_num]
             rect = fitz.Rect(0, y0, page.rect.width, y1)
@@ -180,7 +182,6 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
             img_name = f"q_{q_code}.png"
             pix.save(img_name)
             
-            # Auto-trim side margins for an even tighter fit
             try:
                 im = Image.open(img_name)
                 bg = Image.new(im.mode, im.size, (255, 255, 255))
