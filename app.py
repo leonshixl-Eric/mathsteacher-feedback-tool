@@ -35,7 +35,7 @@ except ImportError:
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Auto-crops your original exam paper and allows you to manually fine-tune the images before generating.")
+st.write("Auto-crops your original exam paper and allows you to manually fine-tune the edges before generating.")
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
@@ -110,14 +110,16 @@ def process_data(uploaded_csv, uploaded_mapping):
         
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
-# --- 3. PDF SCANNER & CROPPER ---
+# --- 3. PDF SCANNER & BULLETPROOF CROPPER ---
 def find_base_crops(pdf_file, required_qs):
-    """Auto-guesses the location of the questions to save the teacher time."""
+    """Auto-guesses the location, with a bulletproof fallback if it fails."""
     base_crops = {}
-    if not pdf_file or not fitz: return base_crops
+    page_count = 1
+    if not pdf_file or not fitz: return base_crops, page_count
     
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     pdf_file.seek(0)
+    page_count = len(doc)
     
     current_num = None
     for page_num in range(len(doc)):
@@ -140,33 +142,53 @@ def find_base_crops(pdf_file, required_qs):
                 if not m: continue
                 num, let = m.groups()
                 
-                full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?0*{num}\s*[\(\.\-]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE)
-                if full_pat.search(text) or (current_num == num and let and re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE).search(text)):
-                    
+                # Super-aggressive scanner to catch hidden text like 2b
+                clean_text = text.lower().replace(" ", "")
+                found = False
+                
+                if let:
+                    if f"{num}{let})" in clean_text or f"{num}({let})" in clean_text or f"{num}.{let}" in clean_text:
+                        found = True
+                    elif current_num == num and (f"({let})" in clean_text or f"{let})" in clean_text):
+                        found = True
+                else:
+                    if f"question{num}" in clean_text or f"q{num}" in clean_text or text.startswith(f"{num}"):
+                        found = True
+                        
+                if found:
                     y0 = max(0, b[1] - 15)
-                    # Guess the bottom of the question (approx 120 pixels down)
-                    y1 = min(page.rect.height, b[1] + 120)
+                    y1 = min(page.rect.height, b[1] + 150) # Generous height
                     base_crops[q] = {"page": page_num, "y0": y0, "y1": y1, "width": page.rect.width, "height": page.rect.height}
                     break
-    return base_crops
+                    
+    # BULLETPROOF FALLBACK: If it misses 2b entirely, put it on Page 1 so the teacher can find it manually
+    default_width = doc[0].rect.width
+    default_height = doc[0].rect.height
+    for q in required_qs:
+        if q not in base_crops:
+            base_crops[q] = {"page": 0, "y0": 50, "y1": 250, "width": default_width, "height": default_height}
+            
+    return base_crops, page_count
 
-def get_adjusted_crop(pdf_file, q_code, base_crop, top_adj, bot_adj):
-    """Renders the actual image based on the teacher's slider adjustments."""
+def get_adjusted_crop(pdf_file, q_code, base_crop, target_page, top_adj, bot_adj, right_adj, dpi=150):
+    """Renders the image based on the teacher's page, top, bottom, and RIGHT edge sliders."""
     if not pdf_file or not fitz or not base_crop: return None
     
     pdf_file.seek(0)
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    page = doc[base_crop["page"]]
     
-    # Apply the user's manual adjustments (+ expands the crop, - shrinks it)
+    # Use the user-selected page!
+    page = doc[target_page]
+    
     final_y0 = max(0, base_crop["y0"] - top_adj)
-    final_y1 = min(base_crop["height"], base_crop["y1"] + bot_adj)
+    final_y1 = min(page.rect.height, base_crop["y1"] + bot_adj)
+    # Apply Right Edge trim
+    final_x1 = max(50, page.rect.width - right_adj) 
     
-    # Ensure y0 is not greater than y1
     if final_y0 >= final_y1: final_y0 = final_y1 - 10
         
-    rect = fitz.Rect(0, final_y0, base_crop["width"], final_y1)
-    pix = page.get_pixmap(clip=rect, dpi=150) # Use 150 DPI for preview to keep it fast
+    rect = fitz.Rect(0, final_y0, final_x1, final_y1)
+    pix = page.get_pixmap(clip=rect, dpi=dpi) 
     
     img_name = f"crop_{q_code}.png"
     pix.save(img_name)
@@ -179,7 +201,7 @@ def add_tight_picture(doc, img_path, max_width_cm):
     run = paragraph.add_run()
     try:
         with Image.open(img_path) as img:
-            dpi = 150.0 
+            dpi = 300.0  # Final generation is hi-res
             img_width_cm = (img.size[0] / dpi) * 2.54
             final_width = min(img_width_cm, max_width_cm.inches * 2.54) 
     except:
@@ -197,10 +219,12 @@ if "base_crops" not in st.session_state:
 if "adjustments" not in st.session_state:
     st.session_state.adjustments = {}
 
+if "pdf_pages" not in st.session_state:
+    st.session_state.pdf_pages = 1
+
 if uploaded_csv and uploaded_pdf and uploaded_mapping:
     student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
     
-    # Calculate exactly which questions we actually need images for to save time
     required_qs = set()
     for _, row in student_rows.iterrows():
         for _, idxs in dynamic_areas:
@@ -208,54 +232,61 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                 if pd.to_numeric(row[idx], errors='coerce') < pd.to_numeric(full_marks_row[idx], errors='coerce'):
                     required_qs.add(q_labels[idx])
     
-    # Sort the required questions logically
     required_qs = sorted(list(required_qs), key=lambda x: q_labels.index(x))
 
     if st.session_state.step == 1:
         if st.button("1. Analyze PDF & Prepare Crops", type="primary", use_container_width=True):
             with st.spinner("Finding questions in the PDF..."):
-                st.session_state.base_crops = find_base_crops(uploaded_pdf, required_qs)
+                base_crops, pages = find_base_crops(uploaded_pdf, required_qs)
+                st.session_state.base_crops = base_crops
+                st.session_state.pdf_pages = pages
                 
-                # Initialize sliders to 0
+                # Initialize sliders
                 for q in required_qs:
-                    st.session_state.adjustments[q] = {"top": 0, "bot": 0}
+                    st.session_state.adjustments[q] = {
+                        "page": base_crops[q]["page"],
+                        "top": 0, 
+                        "bot": 0,
+                        "right": 0
+                    }
                     
                 st.session_state.step = 2
                 st.rerun()
 
     if st.session_state.step == 2:
         st.success("✅ PDF Analyzed! Review and manually adjust your crops below.")
-        st.info("💡 **Pro Tip:** Use the sliders to grab missing diagrams or cut out blank answering space.")
+        st.info("💡 **Pro Tip:** Use the 'Crop Right Edge' slider to cut off [marks]. Use the Page number to fix any missed questions.")
         
-        # Display the Crop Editor for each required question
         for q in required_qs:
             st.markdown(f"### Question: **{q}**")
             
-            if q in st.session_state.base_crops:
-                col_img, col_sliders = st.columns([2, 1])
+            col_img, col_sliders = st.columns([2, 1])
+            
+            with col_sliders:
+                # Page selection (Allows human override if auto-scanner missed the page completely)
+                st.session_state.adjustments[q]["page"] = st.number_input(f"Page Number", min_value=1, max_value=st.session_state.pdf_pages, value=st.session_state.adjustments[q]["page"] + 1, key=f"page_{q}") - 1
                 
-                with col_sliders:
-                    # Sliders update the session state directly
-                    st.session_state.adjustments[q]["top"] = st.slider(f"Adjust Top (px)", -100, 200, st.session_state.adjustments[q]["top"], key=f"top_{q}")
-                    st.session_state.adjustments[q]["bot"] = st.slider(f"Adjust Bottom (px)", -200, 400, st.session_state.adjustments[q]["bot"], key=f"bot_{q}")
-                
-                with col_img:
-                    # Render the live preview of the crop
-                    img_path = get_adjusted_crop(
-                        uploaded_pdf, 
-                        q, 
-                        st.session_state.base_crops[q], 
-                        st.session_state.adjustments[q]["top"], 
-                        st.session_state.adjustments[q]["bot"]
-                    )
-                    st.image(img_path, caption=f"Live Preview: {q}", use_container_width=True)
-            else:
-                st.error(f"Could not auto-locate Question {q}. It will be skipped.")
+                st.session_state.adjustments[q]["top"] = st.slider(f"Adjust Top (px)", -200, 400, st.session_state.adjustments[q]["top"], key=f"top_{q}")
+                st.session_state.adjustments[q]["bot"] = st.slider(f"Adjust Bottom (px)", -300, 600, st.session_state.adjustments[q]["bot"], key=f"bot_{q}")
+                st.session_state.adjustments[q]["right"] = st.slider(f"Crop Right Edge (px)", 0, int(st.session_state.base_crops[q]["width"] - 50), st.session_state.adjustments[q]["right"], key=f"right_{q}")
+            
+            with col_img:
+                img_path = get_adjusted_crop(
+                    uploaded_pdf, 
+                    q, 
+                    st.session_state.base_crops[q], 
+                    st.session_state.adjustments[q]["page"],
+                    st.session_state.adjustments[q]["top"], 
+                    st.session_state.adjustments[q]["bot"],
+                    st.session_state.adjustments[q]["right"],
+                    dpi=100 # Low DPI for fast live preview
+                )
+                st.image(img_path, caption=f"Live Preview: {q}", use_container_width=True)
                 
             st.markdown("---")
 
         if st.button("2. Generate Final Feedback Documents", type="primary", use_container_width=True):
-            with st.spinner(f"Generating reports for {len(student_rows)} students..."):
+            with st.spinner(f"Generating high-res reports for {len(student_rows)} students..."):
                 logo_path = None
                 if uploaded_logo:
                     logo_path = "temp_logo.png"
@@ -293,17 +324,16 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     if personal_qs:
                         doc.add_heading("Personal correction", 2)
                         for q in personal_qs: 
-                            if q in st.session_state.base_crops:
-                                img_path = f"crop_{q}.png"
-                                add_tight_picture(doc, img_path, Cm(14))
+                            # Generate Hi-Res version for Word
+                            img_path = get_adjusted_crop(uploaded_pdf, q, st.session_state.base_crops[q], st.session_state.adjustments[q]["page"], st.session_state.adjustments[q]["top"], st.session_state.adjustments[q]["bot"], st.session_state.adjustments[q]["right"], dpi=300)
+                            add_tight_picture(doc, img_path, Cm(14))
                     
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
                     if reteach_qs:
                         for q in reteach_qs: 
-                            if q in st.session_state.base_crops:
-                                img_path = f"crop_{q}.png"
-                                add_tight_picture(doc, img_path, Cm(15))
+                            img_path = get_adjusted_crop(uploaded_pdf, q, st.session_state.base_crops[q], st.session_state.adjustments[q]["page"], st.session_state.adjustments[q]["top"], st.session_state.adjustments[q]["bot"], st.session_state.adjustments[q]["right"], dpi=300)
+                            add_tight_picture(doc, img_path, Cm(15))
                     else: doc.add_paragraph("Excellent mastery of class-wide topics.")
                     doc.add_page_break()
 
@@ -313,14 +343,13 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                 prs = Presentation()
                 global_reteach = [q for q in q_labels[2:] if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                 for q in global_reteach:
-                    if q in st.session_state.base_crops:
-                        slide = prs.slides.add_slide(prs.slide_layouts[6])
-                        img_path = f"crop_{q}.png"
-                        try:
-                            with Image.open(img_path) as img: aspect = img.size[0] / img.size[1]
-                        except: aspect = 2.0
-                        if aspect > 1.5: slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), width=PptxCm(21.4))
-                        else: slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), height=PptxCm(13.0))
+                    slide = prs.slides.add_slide(prs.slide_layouts[6])
+                    img_path = get_adjusted_crop(uploaded_pdf, q, st.session_state.base_crops[q], st.session_state.adjustments[q]["page"], st.session_state.adjustments[q]["top"], st.session_state.adjustments[q]["bot"], st.session_state.adjustments[q]["right"], dpi=300)
+                    try:
+                        with Image.open(img_path) as img: aspect = img.size[0] / img.size[1]
+                    except: aspect = 2.0
+                    if aspect > 1.5: slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), width=PptxCm(21.4))
+                    else: slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), height=PptxCm(13.0))
                 target_pptx = BytesIO()
                 prs.save(target_pptx)
 
@@ -333,7 +362,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                 st.success(f"✅ Feedback Pack Ready!")
                 st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_name}_Pack.zip", type="primary")
                 
-                # Cleanup
                 if logo_path and os.path.exists(logo_path): os.remove(logo_path)
                 for f in os.listdir():
                     if f.startswith("crop_") and f.endswith(".png"): os.remove(f)
