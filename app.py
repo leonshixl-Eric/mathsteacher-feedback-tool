@@ -89,7 +89,7 @@ def create_question_image(q_code, text, font_size):
     return img_name
 
 def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
-    """Scans the PDF, crops only the question text, and ignores answering spaces."""
+    """Scans the PDF, crops only the question text/diagrams, and ignores answering spaces."""
     q_images = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
@@ -108,21 +108,26 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
         for page_num in range(len(doc)):
             page = doc[page_num]
             blocks = page.get_text("blocks")
-            # Filter out empty blocks to avoid false gaps
-            blocks = [b for b in blocks if str(b[4]).strip() or b[6] == 1]
+            # Keep text blocks with actual text, or image blocks (type 1)
+            blocks = [b for b in blocks if (b[6] == 0 and str(b[4]).strip()) or b[6] == 1]
             blocks.sort(key=lambda b: b[1]) 
             
             page_qs = []
             
             for idx, b in enumerate(blocks):
-                if b[6] == 1: continue # Skip images for text search
+                if b[6] == 1: continue # Skip images for text searching
                 text = str(b[4]).strip()
                 if not text: continue
                 
-                # --- NEW: Persistently track the main question number (e.g. "2") ---
-                num_match = re.match(r"^\s*(?:Question\s+|Q)?(\d+)", text, re.IGNORECASE)
-                if num_match:
-                    current_num = num_match.group(1)
+                # --- NEW: Ultra-Strict Main Number Tracking ---
+                # Only updates if it strictly looks like the start of a question: "Q2", "Question 5", or "3."
+                header_match = re.match(r"^\s*(?:Question\s+|Q)\s*(\d+)", text, re.IGNORECASE)
+                dot_match = re.match(r"^\s*(\d+)\s*[\)\.]", text)
+                
+                if header_match:
+                    current_num = header_match.group(1)
+                elif dot_match:
+                    current_num = dot_match.group(1)
                     
                 for q in valid_qs:
                     if q in q_locations or q in [x[0] for x in page_qs]:
@@ -132,19 +137,19 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                     if not m: continue
                     num, let = m.groups()
                     
-                    full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?{num}\s*[\(\.\-]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                    full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?0*{num}\s*[\(\.\-]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE)
                     
                     if full_pat.search(text):
                         page_qs.append((q, idx, b[1]))
-                        current_num = num
+                        current_num = num # Lock memory to this number
                         break
                     elif current_num == num and let:
-                        let_pat = re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                        let_pat = re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE)
                         if let_pat.search(text):
                             page_qs.append((q, idx, b[1]))
                             break
 
-            # Calculate tight crop bounds
+            # Calculate safe crop bounds
             for i in range(len(page_qs)):
                 q_code, start_idx, y0 = page_qs[i]
                 end_idx = page_qs[i+1][1] if i < len(page_qs) - 1 else len(blocks)
@@ -153,12 +158,15 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                 
                 for k in range(start_idx + 1, end_idx):
                     bk = blocks[k]
-                    gap = bk[1] - bottom_y
                     
-                    # --- NEW: Relaxed gap threshold to 85 to prevent diagram cut-offs ---
-                    if gap > 85:
-                        break
+                    # Only calculate gap if the block is actually below our current bottom
+                    if bk[1] > bottom_y:
+                        gap = bk[1] - bottom_y
                         
+                        # --- NEW: Increased gap threshold to 150 to bypass large diagrams ---
+                        if gap > 150:
+                            break
+                            
                     bk_text = str(bk[4]).strip() if bk[6] == 0 else ""
                     mark_pat = r"^\[\d+\]$|^\(\d+\s*marks?\)$|^\d+\s*marks?$|^\(?total.*?\d+\s*marks?\)?$"
                     if bk_text and re.match(mark_pat, bk_text, re.IGNORECASE):
@@ -166,15 +174,15 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                         
                     bottom_y = max(bottom_y, bk[3])
                 
-                # --- NEW: Added extra safe padding to the bottom cut ---
-                y1 = bottom_y + 25 
+                # --- NEW: Added generous 35pt padding below to prevent text cutoffs ---
+                y1 = bottom_y + 35 
                 
-                if y1 - y0 < 35:
-                    y1 = y0 + 50
+                if y1 - y0 < 40:
+                    y1 = y0 + 60
                     
                 q_locations[q_code] = (page_num, max(0, y0 - 15), min(page.rect.height, y1))
         
-        # Capture and clean the images
+        # Capture images
         for q_code, (page_num, y0, y1) in q_locations.items():
             page = doc[page_num]
             rect = fitz.Rect(0, y0, page.rect.width, y1)
@@ -182,13 +190,14 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
             img_name = f"q_{q_code}.png"
             pix.save(img_name)
             
+            # White-space trimming
             try:
                 im = Image.open(img_name)
                 bg = Image.new(im.mode, im.size, (255, 255, 255))
                 diff = ImageChops.difference(im, bg)
                 bbox = diff.getbbox()
                 if bbox:
-                    pad = 15 
+                    pad = 20 # Increased pad slightly
                     bbox = (max(0, bbox[0]-pad), max(0, bbox[1]-pad), min(im.size[0], bbox[2]+pad), min(im.size[1], bbox[3]+pad))
                     im = im.crop(bbox)
                     im.save(img_name)
