@@ -12,6 +12,7 @@ from pptx import Presentation
 from pptx.util import Cm as PptxCm, Pt as PptxPt
 import zipfile
 import os
+import re
 from io import BytesIO
 
 # --- FIX FOR PYTHON 3.13 ---
@@ -40,8 +41,8 @@ st.markdown("---")
 st.subheader("📝 Document Branding")
 col_brand1, col_brand2 = st.columns(2)
 with col_brand1:
-    unit_title = st.text_input("Unit/Topic Title", value="Standard Form Exam")
-    class_name = st.text_input("Class Name", value="Year 10 Maths")
+    unit_title = st.text_input("Unit/Topic Title", value="Algebraic Manipulation")
+    class_name = st.text_input("Class Name", value="Year 9 Maths")
 with col_brand2:
     uploaded_logo = st.file_uploader("Upload School Logo (Optional)", type=["png", "jpg", "jpeg"])
 
@@ -88,6 +89,10 @@ questions_db = {
           r"      Give your answer in standard form."
 }
 
+def get_question_text(q):
+    """Fetches text if available, or returns a generic placeholder if it's a new exam."""
+    return questions_db.get(q, f"Question {q}\n\n(Please refer to the original exam paper \nfor the full question details).")
+
 def create_question_image(q_code, text, font_size):
     line_count = text.count('\n') + 1
     base_padding = 0.24 
@@ -107,6 +112,32 @@ def create_question_image(q_code, text, font_size):
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
+    # --- NEW: Dynamically build the Q_Labels directly from the file! ---
+    row0 = df_marks.iloc[0].astype(str).tolist()
+    row1 = df_marks.iloc[1].astype(str).tolist()
+    
+    q_labels = ["Surname", "Forename"]
+    current_q = ""
+    
+    for i in range(2, len(row0)):
+        r0 = row0[i].strip()
+        r1 = row1[i].strip()
+        
+        # Stop collecting when we hit the "Total" column
+        if r0.lower() == 'total' or r1.lower() == 'total':
+            break
+            
+        if r0 != 'nan' and r0 != '':
+            m = re.search(r'\d+', r0)
+            if m: current_q = m.group()
+        
+        if r1 != 'nan' and r1 != '':
+            q_labels.append(current_q + r1)
+        else:
+            q_labels.append(current_q)
+
+    # -------------------------------------------------------------------
+
     full_marks_row = df_marks.iloc[2]
     
     percentage_idx = None
@@ -124,9 +155,6 @@ def process_data(uploaded_csv, uploaded_mapping):
     student_rows = df_marks.iloc[3:percentage_idx].reset_index(drop=True)
     student_rows = student_rows.dropna(subset=[0]).reset_index(drop=True)
     
-    # --- UPDATED: Column A is Surname, Column B is Forename ---
-    q_labels = ["Surname", "Forename", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b", "8a", "8b", "9a", "9b", "10"]
-
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
     
     first_cell = str(df_map.iloc[0, 0]).lower()
@@ -193,16 +221,17 @@ if preview_clicked:
             with st.spinner("Generating preview..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
 
+                with st.expander("🛠️ DEBUG: Check Auto-Generated Questions List", expanded=True):
+                    st.write(f"The app dynamically detected these questions from your marks file: **{', '.join(q_labels[2:])}**")
+
                 first_student = None
                 for _, row in student_rows.iterrows():
-                    # Check that the surname isn't blank or a header row
                     cell_text = str(row[0]).lower()
                     if cell_text != 'nan' and 'name' not in cell_text and 'surname' not in cell_text:
                         first_student = row
                         break
                 
                 if first_student is not None:
-                    # --- UPDATED: Construct name from Surname (Col 0) and Forename (Col 1) ---
                     lname = str(first_student[0]).strip()
                     fname = str(first_student[1]).strip()
                     name = f"{fname} {lname}".strip() if fname.lower() != 'nan' else lname
@@ -238,7 +267,7 @@ if preview_clicked:
                     st.markdown("#### 🎯 Personal Corrections")
                     if personal:
                         for q in personal:
-                            img_path = create_question_image(q, questions_db[q], selected_font_size)
+                            img_path = create_question_image(q, get_question_text(q), selected_font_size)
                             st.image(img_path)
                             os.remove(img_path)
                     else:
@@ -247,7 +276,7 @@ if preview_clicked:
                     st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
                     if reteach:
                         for q in reteach:
-                            img_path = create_question_image(q, questions_db[q], selected_font_size)
+                            img_path = create_question_image(q, get_question_text(q), selected_font_size)
                             st.image(img_path)
                             os.remove(img_path)
                     else:
@@ -271,7 +300,9 @@ if generate_clicked:
                         f.write(uploaded_logo.getbuffer())
 
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
-                q_images = {q: create_question_image(q, txt, selected_font_size) for q, txt in questions_db.items()}
+                
+                # --- NEW: Build Images Dynamically for ANY question label found ---
+                q_images = {q: create_question_image(q, get_question_text(q), selected_font_size) for q in q_labels if q not in ["Surname", "Forename"]}
 
                 doc = Document()
                 
@@ -289,7 +320,6 @@ if generate_clicked:
                     section.left_margin, section.right_margin = Cm(selected_margin), Cm(selected_margin)
 
                 for _, row in student_rows.iterrows():
-                    # --- UPDATED: Extract Surname and Forename ---
                     lname = str(row[0]).strip()
                     fname = str(row[1]).strip()
                     
