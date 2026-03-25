@@ -14,6 +14,7 @@ import zipfile
 import os
 import re
 from io import BytesIO
+from PIL import Image
 
 # --- FIX FOR PYTHON 3.13 ---
 try:
@@ -29,7 +30,7 @@ except ImportError:
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Questions are beautifully reconstructed using the internal math engine.")
+st.write("Generating structured feedback with WWW/EBI tables and reconstructed math snippets.")
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
@@ -41,7 +42,7 @@ st.subheader("📝 Document Branding")
 col_brand1, col_brand2 = st.columns(2)
 with col_brand1:
     unit_title = st.text_input("Unit/Topic Title", value="Algebraic Manipulation")
-    class_name = st.text_input("Class Name", value="Year 9 Maths")
+    class_name = st.text_input("Class Name", value="9y2 Maths")
 with col_brand2:
     uploaded_logo = st.file_uploader("Upload School Logo (Optional)", type=["png", "jpg", "jpeg"])
 
@@ -62,10 +63,7 @@ st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
 
-# --- 2. THE RECONSTRUCTION DATABASE (Update your math here!) ---
-# I have pre-filled these based on your Algebraic Manipulation topics.
-# You can use LaTeX formatting like $x^2$ or $\frac{1}{2}$ inside these strings.
-
+# --- 2. THE RECONSTRUCTION DATABASE ---
 questions_db = {
     "1a": r"1a) Expand $3(x + 5)$",
     "1b": r"1b) Expand $4(2y - 3)$",
@@ -77,20 +75,18 @@ questions_db = {
     "5":  r"5) Factorise $x^2 + 7x + 10$",
     "6":  r"6) Expand and simplify $3(x + 2) + 2(x - 1)$",
     "7":  r"7) Solve $x^2 + 5x + 6 = 0$",
-    "8":  r"8) Write an expression for the area of this rectangle...",
+    "8":  r"8) The length of a rectangle is $(x+5)$ and the width is $(x+2)$." + "\n" + r"   Write an expression for the Area.",
     "9":  r"9) Expand $(x + 1)(x + 2)(x + 3)$"
 }
 
 def create_question_image(q_code, font_size):
     text = questions_db.get(q_code, f"Question {q_code}\n(Please update the code with the question text)")
-    
     line_count = text.count('\n') + 1
     base_padding = 0.24 
     height_per_line = font_size * 0.035 
     fig_height = base_padding + (line_count * height_per_line)
     
     plt.figure(figsize=(7, fig_height))
-    # Using 'serif' to make it look like a standard exam paper
     plt.text(0.01, 0.5, text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
     plt.axis('off')
     plt.tight_layout(pad=0)
@@ -103,7 +99,6 @@ def create_question_image(q_code, font_size):
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
-    # Dynamically build labels from Row 1 and Row 2 (Handles 1a, 1b, 1c etc.)
     row0 = df_marks.iloc[0].astype(str).tolist()
     row1 = df_marks.iloc[1].astype(str).tolist()
     
@@ -122,7 +117,6 @@ def process_data(uploaded_csv, uploaded_mapping):
 
     full_marks_row = df_marks.iloc[2]
     
-    # Find the "Percentage" row dynamically
     percentage_idx = None
     for i in range(len(df_marks)):
         if 'percentage' in str(df_marks.iloc[i, 0]).lower():
@@ -135,7 +129,6 @@ def process_data(uploaded_csv, uploaded_mapping):
     percentage_row = df_marks.iloc[percentage_idx]
     student_rows = df_marks.iloc[3:percentage_idx].dropna(subset=[0]).reset_index(drop=True)
     
-    # Topic Mapping
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
     if 'topic' in str(df_map.iloc[0, 0]).lower():
         df_map = df_map.iloc[1:].reset_index(drop=True)
@@ -189,10 +182,11 @@ if preview_clicked or generate_clicked:
             
             if preview_clicked:
                 row = student_rows.iloc[0]
-                name = f"{row[1]} {row[0]}" # Forename Surname
-                st.markdown(f"### Preview: {name}")
+                name = f"{row[1]} {row[0]}"
+                st.markdown(f"### Preview Feedback: **{name}**")
                 
                 student_ebi = []
+                preview_data = []
                 for title, idxs in dynamic_areas:
                     w, e = [], []
                     for idx in idxs:
@@ -200,30 +194,54 @@ if preview_clicked or generate_clicked:
                             w.append(q_labels[idx])
                         else:
                             e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
-                    st.write(f"**{title}**: WWW: {', '.join(w)} | EBI: {', '.join(e)}")
+                    preview_data.append({"Topic": title, "WWW": ", ".join(w), "EBI": ", ".join(e)})
                 
-                st.markdown("#### Visual Math Snippets (EBI Only)")
-                for q in student_ebi:
+                st.table(pd.DataFrame(preview_data))
+                
+                reteach_list = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+                personal_list = [q for q in student_ebi if q not in reteach_list]
+                
+                st.markdown("#### 🎯 Personal Corrections (EBI)")
+                for q in personal_list:
+                    img = create_question_image(q, selected_font_size)
+                    st.image(img)
+                    os.remove(img)
+                
+                st.markdown(f"#### 🏫 Whole-Class Reteaching (Class Avg ≤ {selected_threshold}%)")
+                for q in reteach_list:
                     img = create_question_image(q, selected_font_size)
                     st.image(img)
                     os.remove(img)
 
             if generate_clicked:
-                with st.spinner("Generating files..."):
+                with st.spinner("Generating document pack..."):
+                    logo_path = None
+                    if uploaded_logo:
+                        logo_path = "temp_logo.png"
+                        with open(logo_path, "wb") as f: f.write(uploaded_logo.getbuffer())
+
                     doc = Document()
-                    # Apply margins
                     for section in doc.sections:
                         section.top_margin = section.bottom_margin = section.left_margin = section.right_margin = Cm(selected_margin)
 
                     for _, row in student_rows.iterrows():
                         name = f"{row[1]} {row[0]}"
-                        doc.add_heading(f"{unit_title} Feedback: {name}", 1)
+                        
+                        # Header
+                        header = doc.add_paragraph()
+                        if logo_path:
+                            run = header.add_run()
+                            run.add_picture(logo_path, width=Cm(1.5))
+                            run.add_text("    ")
+                        title_run = header.add_run(f"{unit_title} Feedback: {name}   |   Class: {class_name}")
+                        title_run.bold = True
+                        title_run.font.size = Pt(14)
                         
                         # WWW/EBI Table
                         table = doc.add_table(rows=1, cols=3)
                         table.style = 'Table Grid'
                         hdr = table.rows[0].cells
-                        hdr[0].text, hdr[1].text, hdr[2].text = "Area", "WWW", "EBI"
+                        hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
                         
                         student_ebi = []
                         for title, idxs in dynamic_areas:
@@ -236,27 +254,42 @@ if preview_clicked or generate_clicked:
                             r = table.add_row().cells
                             r[0].text, r[1].text, r[2].text = title, ", ".join(w), ", ".join(e)
 
-                        # Personal Corrections (EBI)
-                        doc.add_heading("Personal Corrections", 2)
-                        for q in student_ebi:
-                            # Only add if NOT in whole-class reteach
-                            if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') > threshold_decimal:
+                        # Logic to split EBI
+                        reteach_qs = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+                        personal_qs = [q for q in student_ebi if q not in reteach_qs]
+                        
+                        # Personal Corrections
+                        if personal_qs:
+                            doc.add_heading("Personal correction", 2)
+                            for q in personal_qs:
                                 img = create_question_image(q, selected_font_size)
                                 add_tight_picture(doc, img, width=Cm(14))
                                 os.remove(img)
+                        
+                        doc.add_page_break()
+                        
+                        # Reteaching Section
+                        doc.add_heading(f"Whole-class reteaching - {name}", 1)
+                        if reteach_qs:
+                            for q in reteach_qs:
+                                img = create_question_image(q, selected_font_size)
+                                add_tight_picture(doc, img, width=Cm(15))
+                                os.remove(img)
+                        else:
+                            doc.add_paragraph("Excellent mastery of class-wide topics.")
                         
                         doc.add_page_break()
 
                     target_docx = BytesIO()
                     doc.save(target_docx)
                     
-                    # PowerPoint
+                    # PowerPoint Generation
                     prs = Presentation()
                     global_reteach = [q for q in q_labels[2:] if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     for q in global_reteach:
                         slide = prs.slides.add_slide(prs.slide_layouts[6])
                         img = create_question_image(q, selected_font_size)
-                        slide.shapes.add_picture(img, PptxCm(1), PptxCm(2), width=PptxCm(23))
+                        prs_img = slide.shapes.add_picture(img, PptxCm(1), PptxCm(2), width=PptxCm(23))
                         os.remove(img)
                     
                     target_pptx = BytesIO()
@@ -264,12 +297,16 @@ if preview_clicked or generate_clicked:
 
                     # Zip and Download
                     zip_buffer = BytesIO()
+                    safe_class = str(class_name).replace(" ", "_")
                     with zipfile.ZipFile(zip_buffer, "w") as z:
-                        z.writestr(f"{class_name}_Feedback.docx", target_docx.getvalue())
-                        z.writestr(f"{class_name}_Reteach.pptx", target_pptx.getvalue())
+                        z.writestr(f"{safe_class}_Feedback_Reports.docx", target_docx.getvalue())
+                        if global_reteach:
+                            z.writestr(f"{safe_class}_Reteach_Slides.pptx", target_pptx.getvalue())
                     
-                    st.success("✅ Done!")
-                    st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{class_name}_Feedback_Pack.zip", type="primary")
+                    st.success("✅ Feedback Pack Ready!")
+                    st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_class}_Feedback_Pack.zip", type="primary")
+
+                    if logo_path and os.path.exists(logo_path): os.remove(logo_path)
 
         except Exception as e:
             st.error(f"Error: {e}")
