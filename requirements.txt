@@ -4,6 +4,7 @@ pandas
 openpyxl
 python-docx
 python-pptx
-PyMuPDF
+pymupdf
 Pillow
 matplotlib
+filetype
