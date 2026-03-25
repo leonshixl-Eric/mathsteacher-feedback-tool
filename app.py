@@ -28,7 +28,7 @@ except ImportError:
     sys.modules['imghdr'] = MockImghdr()
 
 try:
-    import fitz  # PyMuPDF for reading text only (no cropping!)
+    import fitz  # PyMuPDF for reading text
 except ImportError:
     fitz = None
 
@@ -39,7 +39,7 @@ st.write("Auto-reads questions from your PDF and reconstructs them with beautifu
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
-uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (To read the text)", type="pdf")
+uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (To read the exact text)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 # --- BRANDING SETTINGS ---
@@ -71,82 +71,118 @@ threshold_decimal = selected_threshold / 100.0
 
 # --- 2. THE RECONSTRUCTION ENGINE ---
 
+# Fallback Database (In case the PDF is a scanned image without readable text)
+questions_db = {
+    "1a": r"1a) Expand $3(x + 5)$",
+    "1b": r"1b) Expand $4(2y - 3)$",
+    "1c": r"1c) Expand $a(a + 4)$",
+    "2a": r"2a) Factorise $6x + 9$",
+    "2b": r"2b) Factorise $10y - 15$",
+    "3":  r"3) Expand and simplify $(x + 3)(x + 5)$",
+    "4":  r"4) Expand and simplify $(2x + 1)(x + 4)$",
+    "5":  r"5) Factorise $x^2 + 7x + 10$",
+    "6":  r"6) Expand and simplify $3(x + 2) + 2(x - 1)$",
+    "7":  r"7) Solve $x^2 + 5x + 6 = 0$",
+    "8":  r"8) The length of a rectangle is $(x+5)$ and the width is $(x+2)$." + "\n" + r"      Write an expression for the Area.",
+    "9":  r"9) Expand $(x + 1)(x + 2)(x + 3)$"
+}
+
 def build_dynamic_db(pdf_file, q_labels):
-    """Reads the PDF text, matches it to your questions, and applies Math formatting."""
+    """Smart Multi-Line Scanner: Reads PDF text, pieces together disconnected numbers, and formats math."""
     db = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
     if not pdf_file or not fitz:
-        return {q: f"Question {q} (PDF missing)" for q in valid_qs}
+        return {q: questions_db.get(q, f"Question {q} (PDF missing)") for q in valid_qs}
         
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     pdf_file.seek(0)
     
+    full_text = ""
+    for page in doc:
+        full_text += page.get_text("text") + "\n"
+        
+    if not full_text.strip():
+        # The PDF is an image scan, fallback to the database!
+        return {q: questions_db.get(q, f"Question {q} (Scanned PDF, no text found)") for q in valid_qs}
+        
+    lines = full_text.split('\n')
+    
+    main_q = None
     current_q = None
     current_text = []
     
-    for page in doc:
-        blocks = page.get_text("blocks")
-        blocks.sort(key=lambda b: b[1])
+    for line in lines:
+        line = line.strip()
+        if not line: continue
         
-        for b in blocks:
-            if b[6] == 1: continue  # Completely ignore images/diagrams
-            text = b[4].strip()
-            if not text: continue
+        # 1. Remember the main question number (e.g., "1" on a line by itself)
+        main_match = re.match(r"^(?:Question\s+|Q)?(\d+)\s*[\.\-\)]?$", line, re.IGNORECASE)
+        if main_match:
+            main_q = main_match.group(1)
             
-            found_q = None
-            for q in valid_qs:
-                m = re.match(r"(\d+)([a-zA-Z]*)", q)
-                if not m: continue
-                num, let = m.groups()
+        found_q = None
+        for q in valid_qs:
+            m = re.match(r"(\d+)([a-zA-Z]*)", q)
+            if not m: continue
+            num, let = m.groups()
+            
+            if let:
+                # Matches "1a" or "1(a)" on a single line
+                pat1 = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*\(?{let}\)?(?:\s|$|\.)"
+                # Matches "(a)" if the scanner already remembers that we are on question "1"
+                pat2 = rf"^\s*\(?{let}\)?(?:\s|$|\.)"
                 
-                # Check if this text block looks like the start of a question
-                if let:
-                    if re.search(rf"^\s*(?:Question\s+|Q)?{num}\s*[\.\-\)]?\s*\(?{let}\)?", text, re.IGNORECASE):
-                        found_q = q; break
-                    elif current_q and re.match(r"(\d+)", current_q).group(1) == num and re.search(rf"^\s*\(?{let}\)?", text, re.IGNORECASE):
-                        found_q = q; break
-                else:
-                    if re.search(rf"^\s*(?:Question\s+|Q)?{num}\s*[\.\-\)]", text, re.IGNORECASE):
-                        found_q = q; break
-                        
-            if found_q:
-                # Save the previous question's text before starting a new one
-                if current_q and current_text:
-                    db[current_q] = "\n".join(current_text)
-                current_q = found_q
-                current_text = [text]
-            elif current_q:
-                # Stop grabbing text if we hit a marks indicator (e.g., "[2]")
-                if re.search(r"^\[\d+\]$|^\(\d+\s*marks?\)$|total.*marks", text, re.IGNORECASE):
-                    db[current_q] = "\n".join(current_text)
-                    current_q = None
-                    current_text = []
-                else:
-                    current_text.append(text)
+                if re.match(pat1, line, re.IGNORECASE):
+                    found_q = q; main_q = num; break
+                elif main_q == num and re.match(pat2, line, re.IGNORECASE):
+                    found_q = q; break
+            else:
+                pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?(?:\s|$)"
+                if re.match(pat, line, re.IGNORECASE):
+                    found_q = q; main_q = num; break
                     
-    # Catch the very last question on the paper
+        if found_q:
+            if current_q and current_text:
+                db[current_q] = "\n".join(current_text)
+            current_q = found_q
+            
+            # Strip the numbering from the text so it doesn't duplicate
+            m = re.match(r"(\d+)([a-zA-Z]*)", found_q)
+            num, let = m.groups()
+            if let:
+                line = re.sub(rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*\(?{let}\)?(?:\s|$|\.)", "", line, flags=re.IGNORECASE).strip()
+                line = re.sub(rf"^\s*\(?{let}\)?(?:\s|$|\.)", "", line, flags=re.IGNORECASE).strip()
+            else:
+                line = re.sub(rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?(?:\s|$)", "", line, flags=re.IGNORECASE).strip()
+                
+            current_text = [line] if line else []
+        elif current_q:
+            # Stop grabbing text if we hit the Marks Box (e.g., "[2]")
+            if re.match(r"^\[\d+\]$|^\(\d+\s*marks?\)$|^total.*marks", line, re.IGNORECASE):
+                db[current_q] = "\n".join(current_text)
+                current_q = None
+                current_text = []
+            else:
+                current_text.append(line)
+                
     if current_q and current_text:
         db[current_q] = "\n".join(current_text)
         
-    # Format the extracted text beautifully
+    # Post-process and apply the Math Fixer
+    final_db = {}
     for q in valid_qs:
-        if q in db:
+        if q in db and db[q].strip():
             raw = db[q]
-            # Fix PDF line breaks
-            raw = re.sub(r'(?<![\.\?\!\:])\n(?!\n)', ' ', raw)
-            # Math Auto-Fixer: Converts x2 to $x^2$, y3 to $y^3$ for the math engine
+            raw = re.sub(r'(?<![\.\?\!\:\=])\n(?!\n)', ' ', raw).strip()
+            # Converts x2 to $x^2$ for the Math Engine
             clean = re.sub(r'\b([a-zA-Z])([2345])\b', r'$\1^\2$', raw)
-            
-            # Ensure the question number is clearly stated at the start
-            if not clean.lower().startswith(q.lower()):
-                clean = f"{q}) {clean}"
-                
-            db[q] = textwrap.fill(clean, width=65)
+            final_db[q] = textwrap.fill(f"{q}) {clean}", width=65)
         else:
-            db[q] = f"Question {q} (Could not locate in PDF text)"
+            # If the PDF reader missed it, safely fallback to the database
+            final_db[q] = questions_db.get(q, f"Question {q} (Could not locate in PDF text)")
             
-    return db
+    return final_db
 
 def create_text_image(q_code, font_size, dynamic_db):
     """Generates a pure text, high-fidelity snippet using Matplotlib."""
@@ -183,7 +219,7 @@ def process_data(uploaded_csv, uploaded_mapping):
     percentage_idx = next(i for i in range(len(df_marks)) if 'percentage' in str(df_marks.iloc[i, 0]).lower())
     percentage_row = df_marks.iloc[percentage_idx]
     
-    # Filter out absent students (blank marks)
+    # Skip Absent Students
     raw_students = df_marks.iloc[3:percentage_idx].dropna(subset=[0, 1], how='all')
     student_rows = raw_students[raw_students.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
     
@@ -222,7 +258,7 @@ with col2: generate_clicked = st.button("📄 Generate All Feedback", type="prim
 
 if preview_clicked or generate_clicked:
     if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
-        st.error("Missing Marks, PDF, or Mapping files.")
+        st.error("Please upload all 3 files (Marks, PDF, and Mapping).")
     else:
         try:
             student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
@@ -230,12 +266,13 @@ if preview_clicked or generate_clicked:
             if student_rows.empty:
                 st.warning("No students with marks were found.")
             else:
-                with st.spinner("Reading Text from PDF..."):
+                with st.spinner("Scanning Text from PDF..."):
                     dynamic_db = build_dynamic_db(uploaded_pdf, q_labels)
 
                 if preview_clicked:
                     row = student_rows.iloc[0]
-                    st.markdown(f"### Preview Feedback: **{row[1]} {row[0]}**")
+                    name = f"{row[1]} {row[0]}"
+                    st.markdown(f"### Preview Feedback: **{name}**")
                     student_ebi = []
                     preview_data = []
                     for title, idxs in dynamic_areas:
