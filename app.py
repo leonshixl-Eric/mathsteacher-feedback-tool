@@ -30,7 +30,7 @@ except ImportError:
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Generating structured feedback with WWW/EBI tables and reconstructed math snippets.")
+st.write("Generating structured feedback with full labels and reconstructed math snippets. Absent students are automatically skipped.")
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
@@ -128,13 +128,9 @@ def process_data(uploaded_csv, uploaded_mapping):
         
     percentage_row = df_marks.iloc[percentage_idx]
     
-    # --- SKIP STUDENTS WITH BLANK MARKS ---
-    # We grab the student rows and filter: keep only rows where there is at least one non-null value in the question columns
+    # Filter out students with blank marks in the question columns
     raw_student_rows = df_marks.iloc[3:percentage_idx].dropna(subset=[0, 1], how='all')
-    
-    # The marks columns start from column index 2
     student_rows = raw_student_rows[raw_student_rows.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
-    # --------------------------------------
     
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
     if 'topic' in str(df_map.iloc[0, 0]).lower():
@@ -188,7 +184,7 @@ if preview_clicked or generate_clicked:
             student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
             
             if student_rows.empty:
-                st.warning("No students found with recorded marks in the question columns.")
+                st.warning("No students with recorded marks were found.")
             else:
                 if preview_clicked:
                     row = student_rows.iloc[0]
@@ -204,14 +200,14 @@ if preview_clicked or generate_clicked:
                                 w.append(q_labels[idx])
                             else:
                                 e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
-                        preview_data.append({"Topic": title, "WWW": ", ".join(w), "EBI": ", ".join(e)})
+                        preview_data.append({"Topic": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
                     
                     st.table(pd.DataFrame(preview_data))
                     
                     reteach_list = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal_list = [q for q in student_ebi if q not in reteach_list]
                     
-                    st.markdown("#### 🎯 Personal Corrections (EBI)")
+                    st.markdown("#### 🎯 Personal Corrections (Even Better If)")
                     for q in personal_list:
                         img = create_question_image(q, selected_font_size)
                         st.image(img)
@@ -249,7 +245,7 @@ if preview_clicked or generate_clicked:
                             table = doc.add_table(rows=1, cols=3)
                             table.style = 'Table Grid'
                             hdr = table.rows[0].cells
-                            hdr[0].text, hdr[1].text, hdr[2].text = "Area", "what went well", "even better if"
+                            hdr[0].text, hdr[1].text, hdr[2].text = "Area", "What Went Well", "Even Better If"
                             
                             student_ebi = []
                             for title, idxs in dynamic_areas:
@@ -302,12 +298,12 @@ if preview_clicked or generate_clicked:
                         zip_buffer = BytesIO()
                         safe_class = str(class_name).replace(" ", "_")
                         with zipfile.ZipFile(zip_buffer, "w") as z:
-                            z.writestr(f"{safe_class}_Feedback_Reports.docx", target_docx.getvalue())
+                            z.writestr(f"{safe_class}_Reports.docx", target_docx.getvalue())
                             if global_reteach:
                                 z.writestr(f"{safe_class}_Reteach_Slides.pptx", target_pptx.getvalue())
                         
-                        st.success(f"✅ Success! Feedback generated for {len(student_rows)} students.")
-                        st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_class}_Feedback_Pack.zip", type="primary")
+                        st.success(f"✅ Feedback generated for {len(student_rows)} students.")
+                        st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_class}_Pack.zip", type="primary")
 
                         if logo_path and os.path.exists(logo_path): os.remove(logo_path)
 
