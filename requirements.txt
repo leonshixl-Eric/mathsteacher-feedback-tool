@@ -1,4 +1,5 @@
 streamlit
+streamlit-cropper
 pandas
 openpyxl
 python-docx
