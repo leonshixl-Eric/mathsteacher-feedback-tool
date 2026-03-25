@@ -103,20 +103,22 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
         
         q_locations = {}
         
+        # --- NEW: Persist the current question number ACROSS pages! ---
+        current_num = None 
+        
         for page_num in range(len(doc)):
             page = doc[page_num]
             blocks = page.get_text("blocks")
             blocks.sort(key=lambda b: b[1]) # Sort blocks top to bottom
             
             page_qs = []
-            current_num = None
             
             for b in blocks:
                 text = b[4].strip()
                 if not text: continue
                 
-                # Check for main question numbers like "1." or "Q1"
-                num_match = re.match(r"^\s*(?:Question\s+|Q)?(\d+)(?:[\)\.\-\s]|$)", text, re.IGNORECASE)
+                # Update current main question number if found (e.g. "2.") anywhere at the start of a line
+                num_match = re.search(r"(?:^|\n)\s*(?:Question\s+|Q)?(\d+)(?:[\)\.\-\s]|$)", text, re.IGNORECASE)
                 if num_match:
                     current_num = num_match.group(1)
                     
@@ -128,17 +130,17 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                     if not m: continue
                     num, let = m.groups()
                     
-                    # Full match check (e.g., "1a", "1(a)")
-                    full_pat = re.compile(rf"^\s*(?:Question\s+|Q)?{num}\s*[\(\.\-]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                    # Full match check (e.g., "1a", "1(a)") searching deeply inside paragraphs
+                    full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?{num}\s*[\(\.\-]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
                     
-                    if full_pat.match(text[:25]):
+                    if full_pat.search(text):
                         page_qs.append((q, b[1]))
                         current_num = num
                         break
-                    # Sub-question check (e.g., "(a)")
+                    # Sub-question check (e.g., "b)") relying on our persistent memory of the current number!
                     elif current_num == num and let:
-                        let_pat = re.compile(rf"^\s*[\(\.]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
-                        if let_pat.match(text[:15]):
+                        let_pat = re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                        if let_pat.search(text):
                             page_qs.append((q, b[1]))
                             break
 
