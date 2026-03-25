@@ -15,7 +15,7 @@ import os
 import re
 from io import BytesIO
 
-# --- FIX FOR PYTHON 3.13 ---
+# --- FIX FOR PYTHON 3.13 & PYMUPDF ---
 try:
     import imghdr
 except ImportError:
@@ -25,6 +25,11 @@ except ImportError:
             kind = filetype.guess(file)
             return kind.extension if kind else None
     sys.modules['imghdr'] = MockImghdr()
+
+try:
+    import fitz  # PyMuPDF for PDF text extraction
+except ImportError:
+    fitz = None
 
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
@@ -64,43 +69,62 @@ st.markdown("---")
 threshold_decimal = selected_threshold / 100.0
 
 # --- 2. THE RECONSTRUCTION ENGINE ---
-questions_db = {
-    "1a": r"Write each number as a power of 10." + "\n" + r"1a) 1000",
-    "1b": r"Write each number as a power of 10." + "\n" + r"1b) 0.01",
-    "2a": r"Write each power of 10 as an ordinary number." + "\n" + r"2a) $10^5$",
-    "2b": r"Write each power of 10 as an ordinary number." + "\n" + r"2b) $10^{-3}$",
-    "3a": r"Write each number in standard form as an ordinary number." + "\n" + r"3a) $5 \times 10^6$",
-    "3b": r"Write each number in standard form as an ordinary number." + "\n" + r"3b) $3.7 \times 10^3$",
-    "4a": r"Write each number in standard form as an ordinary number." + "\n" + r"4a) $7 \times 10^{-3}$",
-    "4b": r"Write each number in standard form as an ordinary number." + "\n" + r"4b) $8.39 \times 10^{-5}$",
-    "5a": r"5a) The diameter of Mars is approximately 7000 km." + "\n" + r"      Write the diameter of Mars in standard form.",
-    "5b": r"5b) The diameter of Uranus is approximately 50,720,000 m." + "\n" + r"      Write the diameter of Uranus in standard form.",
-    "6a": r"Write each number in standard form." + "\n" + r"6a) 0.0005",
-    "6b": r"Write each number in standard form." + "\n" + r"6b) 0.0201",
-    "7a": r"Write <, > or = to make the statements correct." + "\n" + r"7a) 810,000 [   ] $8.1 \times 10^4$",
-    "7b": r"Write <, > or = to make the statements correct." + "\n" + r"7b) $3 \times 10^{-4}$ [   ] 0.0003",
-    "8a": r"Write each number in standard form." + "\n" + r"8a) $64 \times 10^7$",
-    "8b": r"Write each number in standard form." + "\n" + r"8b) $360.7 \times 10^{-5}$",
-    "9a": r"Work out the following." + "\n" + r"Give your answers in standard form." + "\n" + r"9a) $(3 \times 10^4) + (6 \times 10^3)$",
-    "9b": r"Work out the following." + "\n" + r"Give your answers in standard form." + "\n" + r"9b) $(1.5 \times 10^{-5}) \div (5 \times 10^{-1})$",
-    "10": r"10) The distance from Earth to Venus is approximately $4.5 \times 10^7$ km." + "\n" +
-          r"      A spacecraft travels at a speed of $5 \times 10^8$ km/h." + "\n" +
-          r"      Work out how many hours it will take the spacecraft to reach Venus." + "\n" +
-          r"      Give your answer in standard form."
-}
 
-def get_question_text(q):
-    """Fetches text if available, or returns a generic placeholder if it's a new exam."""
-    return questions_db.get(q, f"Question {q}\n\n(Please refer to the original exam paper \nfor the full question details).")
+def extract_questions_from_pdf(pdf_file, q_labels):
+    """Scans the uploaded PDF and tries to extract the text for each question."""
+    db = {}
+    if not pdf_file or not fitz:
+        return db
+        
+    try:
+        # Read the PDF text
+        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        full_text = "\n".join([page.get_text("text") for page in doc])
+        pdf_file.seek(0) # Reset file pointer
+        
+        valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
+        
+        for q in valid_qs:
+            # Parse the question number and letter (e.g. "1a" -> "1", "a")
+            m = re.match(r"(\d+)([a-zA-Z]*)", q)
+            if not m: continue
+            num, let = m.groups()
+            
+            # Build a search pattern to find "1a", "1(a)", "1 a", or "1."
+            if let:
+                search_str = rf"\b{num}\s*[\(\.]?\s*{let}[\)\.]?"
+            else:
+                search_str = rf"\b{num}\s*[\)\.]"
+                
+            match = re.search(search_str, full_text, re.IGNORECASE)
+            if match:
+                start_idx = match.end()
+                # Grab the next 200 characters as the question text
+                extracted = full_text[start_idx:start_idx+200].strip()
+                # Clean up weird line breaks from the PDF
+                extracted = re.sub(r'\s+', ' ', extracted)
+                db[q] = f"{q}) {extracted}..."
+    except Exception as e:
+        st.warning(f"Could not extract text from PDF: {e}")
+        
+    return db
 
 def create_question_image(q_code, text, font_size):
-    line_count = text.count('\n') + 1
-    base_padding = 0.24 
+    # Fallback text if the PDF didn't contain the question or wasn't readable
+    if not text:
+        text = f"Question {q_code}\n\n(Please refer to the original exam paper \nfor exact mathematical formatting)."
+        
+    # Wrap text if it is too long (since we extract raw PDF text now)
+    import textwrap
+    wrapped_text = textwrap.fill(text, width=60)
+        
+    line_count = wrapped_text.count('\n') + 1
+    base_padding = 0.3 
     height_per_line = font_size * 0.035 
     fig_height = base_padding + (line_count * height_per_line)
     
     plt.figure(figsize=(7, fig_height))
-    plt.text(0.01, 0.5, text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
+    plt.text(0.01, 0.5, wrapped_text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
     plt.axis('off')
     plt.tight_layout(pad=0)
     
@@ -112,7 +136,7 @@ def create_question_image(q_code, text, font_size):
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
-    # --- NEW: Dynamically build the Q_Labels directly from the file! ---
+    # 1. Dynamically build Q Labels from Row 1 and Row 2
     row0 = df_marks.iloc[0].astype(str).tolist()
     row1 = df_marks.iloc[1].astype(str).tolist()
     
@@ -123,23 +147,18 @@ def process_data(uploaded_csv, uploaded_mapping):
         r0 = row0[i].strip()
         r1 = row1[i].strip()
         
-        # Stop collecting when we hit the "Total" column
-        if r0.lower() == 'total' or r1.lower() == 'total':
-            break
+        if r0.lower() == 'total' or r1.lower() == 'total': break
             
         if r0 != 'nan' and r0 != '':
             m = re.search(r'\d+', r0)
             if m: current_q = m.group()
         
-        if r1 != 'nan' and r1 != '':
-            q_labels.append(current_q + r1)
-        else:
-            q_labels.append(current_q)
-
-    # -------------------------------------------------------------------
+        if r1 != 'nan' and r1 != '': q_labels.append(current_q + r1)
+        else: q_labels.append(current_q)
 
     full_marks_row = df_marks.iloc[2]
     
+    # 2. Dynamically find percentage row
     percentage_idx = None
     for i in range(len(df_marks)):
         cell_val = str(df_marks.iloc[i, 0]).strip().lower()
@@ -218,11 +237,11 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         try:
-            with st.spinner("Generating preview..."):
+            with st.spinner("Analyzing Exam Files..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
-
-                with st.expander("🛠️ DEBUG: Check Auto-Generated Questions List", expanded=True):
-                    st.write(f"The app dynamically detected these questions from your marks file: **{', '.join(q_labels[2:])}**")
+                
+                # Extract text directly from the uploaded PDF!
+                pdf_db = extract_questions_from_pdf(uploaded_pdf, q_labels)
 
                 first_student = None
                 for _, row in student_rows.iterrows():
@@ -267,7 +286,7 @@ if preview_clicked:
                     st.markdown("#### 🎯 Personal Corrections")
                     if personal:
                         for q in personal:
-                            img_path = create_question_image(q, get_question_text(q), selected_font_size)
+                            img_path = create_question_image(q, pdf_db.get(q, ""), selected_font_size)
                             st.image(img_path)
                             os.remove(img_path)
                     else:
@@ -276,7 +295,7 @@ if preview_clicked:
                     st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
                     if reteach:
                         for q in reteach:
-                            img_path = create_question_image(q, get_question_text(q), selected_font_size)
+                            img_path = create_question_image(q, pdf_db.get(q, ""), selected_font_size)
                             st.image(img_path)
                             os.remove(img_path)
                     else:
@@ -301,8 +320,9 @@ if generate_clicked:
 
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 
-                # --- NEW: Build Images Dynamically for ANY question label found ---
-                q_images = {q: create_question_image(q, get_question_text(q), selected_font_size) for q in q_labels if q not in ["Surname", "Forename"]}
+                # Extract text directly from the uploaded PDF!
+                pdf_db = extract_questions_from_pdf(uploaded_pdf, q_labels)
+                q_images = {q: create_question_image(q, pdf_db.get(q, ""), selected_font_size) for q in q_labels if q not in ["Surname", "Forename"]}
 
                 doc = Document()
                 
