@@ -14,7 +14,6 @@ import zipfile
 import os
 import re
 from io import BytesIO
-from PIL import Image
 
 # --- FIX FOR PYTHON 3.13 ---
 try:
@@ -64,7 +63,11 @@ st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
 
-# --- 2. THE RECONSTRUCTION DATABASE ---
+
+# =====================================================================
+# 🛑 TEACHER INSTRUCTIONS: TYPE YOUR EXACT EXAM QUESTIONS HERE 🛑
+# Use standard text, or use $...$ for beautiful math formatting (e.g., $x^2$)
+# =====================================================================
 questions_db = {
     "1a": r"1a) Expand $3(x + 5)$",
     "1b": r"1b) Expand $4(2y - 3)$",
@@ -76,9 +79,11 @@ questions_db = {
     "5":  r"5) Factorise $x^2 + 7x + 10$",
     "6":  r"6) Expand and simplify $3(x + 2) + 2(x - 1)$",
     "7":  r"7) Solve $x^2 + 5x + 6 = 0$",
-    "8":  r"8) The length of a rectangle is $(x+5)$ and the width is $(x+2)$." + "\n" + r"   Write an expression for the Area.",
+    "8":  r"8) The length of a rectangle is $(x+5)$ and the width is $(x+2)$." + "\n" + r"      Write an expression for the Area.",
     "9":  r"9) Expand $(x + 1)(x + 2)(x + 3)$"
 }
+# =====================================================================
+
 
 def create_question_image(q_code, font_size):
     text = questions_db.get(q_code, f"Question {q_code}\n(Please update the code with the question text)")
