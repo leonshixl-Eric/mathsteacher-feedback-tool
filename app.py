@@ -27,7 +27,7 @@ except ImportError:
     sys.modules['imghdr'] = MockImghdr()
 
 try:
-    import fitz  # PyMuPDF for PDF text extraction
+    import fitz  # PyMuPDF for PDF image cropping
 except ImportError:
     fitz = None
 
@@ -70,61 +70,15 @@ threshold_decimal = selected_threshold / 100.0
 
 # --- 2. THE RECONSTRUCTION ENGINE ---
 
-def extract_questions_from_pdf(pdf_file, q_labels):
-    """Scans the uploaded PDF and tries to extract the text for each question."""
-    db = {}
-    if not pdf_file or not fitz:
-        return db
-        
-    try:
-        # Read the PDF text
-        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-        full_text = "\n".join([page.get_text("text") for page in doc])
-        pdf_file.seek(0) # Reset file pointer
-        
-        valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
-        
-        for q in valid_qs:
-            # Parse the question number and letter (e.g. "1a" -> "1", "a")
-            m = re.match(r"(\d+)([a-zA-Z]*)", q)
-            if not m: continue
-            num, let = m.groups()
-            
-            # Build a search pattern to find "1a", "1(a)", "1 a", or "1."
-            if let:
-                search_str = rf"\b{num}\s*[\(\.]?\s*{let}[\)\.]?"
-            else:
-                search_str = rf"\b{num}\s*[\)\.]"
-                
-            match = re.search(search_str, full_text, re.IGNORECASE)
-            if match:
-                start_idx = match.end()
-                # Grab the next 200 characters as the question text
-                extracted = full_text[start_idx:start_idx+200].strip()
-                # Clean up weird line breaks from the PDF
-                extracted = re.sub(r'\s+', ' ', extracted)
-                db[q] = f"{q}) {extracted}..."
-    except Exception as e:
-        st.warning(f"Could not extract text from PDF: {e}")
-        
-    return db
-
 def create_question_image(q_code, text, font_size):
-    # Fallback text if the PDF didn't contain the question or wasn't readable
-    if not text:
-        text = f"Question {q_code}\n\n(Please refer to the original exam paper \nfor exact mathematical formatting)."
-        
-    # Wrap text if it is too long (since we extract raw PDF text now)
-    import textwrap
-    wrapped_text = textwrap.fill(text, width=60)
-        
-    line_count = wrapped_text.count('\n') + 1
-    base_padding = 0.3 
+    """Fallback generator if the PDF crop fails."""
+    line_count = text.count('\n') + 1
+    base_padding = 0.24 
     height_per_line = font_size * 0.035 
     fig_height = base_padding + (line_count * height_per_line)
     
     plt.figure(figsize=(7, fig_height))
-    plt.text(0.01, 0.5, wrapped_text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
+    plt.text(0.01, 0.5, text, fontsize=font_size, verticalalignment='center', fontfamily='serif')
     plt.axis('off')
     plt.tight_layout(pad=0)
     
@@ -133,10 +87,100 @@ def create_question_image(q_code, text, font_size):
     plt.close()
     return img_name
 
+def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
+    """Scans the PDF and literally crops a picture of the exact question."""
+    q_images = {}
+    valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
+    
+    if not pdf_file or not fitz:
+        for q in valid_qs:
+            q_images[q] = create_question_image(q, f"Question {q}\n(PDF Engine missing)", font_size)
+        return q_images
+        
+    try:
+        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        pdf_file.seek(0)
+        
+        q_locations = {}
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            blocks = page.get_text("blocks")
+            blocks.sort(key=lambda b: b[1]) # Sort blocks top to bottom
+            
+            page_qs = []
+            current_num = None
+            
+            for b in blocks:
+                text = b[4].strip()
+                if not text: continue
+                
+                # Check for main question numbers like "1." or "Q1"
+                num_match = re.match(r"^\s*(?:Question\s+|Q)?(\d+)(?:[\)\.\-\s]|$)", text, re.IGNORECASE)
+                if num_match:
+                    current_num = num_match.group(1)
+                    
+                for q in valid_qs:
+                    if q in q_locations or q in [x[0] for x in page_qs]:
+                        continue
+                        
+                    m = re.match(r"(\d+)([a-zA-Z]*)", q)
+                    if not m: continue
+                    num, let = m.groups()
+                    
+                    # Full match check (e.g., "1a", "1(a)")
+                    full_pat = re.compile(rf"^\s*(?:Question\s+|Q)?{num}\s*[\(\.\-]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                    
+                    if full_pat.match(text[:25]):
+                        page_qs.append((q, b[1]))
+                        current_num = num
+                        break
+                    # Sub-question check (e.g., "(a)")
+                    elif current_num == num and let:
+                        let_pat = re.compile(rf"^\s*[\(\.]?\s*{let}(?:[\)\.\-\s]|$)", re.IGNORECASE)
+                        if let_pat.match(text[:15]):
+                            page_qs.append((q, b[1]))
+                            break
+
+            # Calculate crop height based on where the next question starts
+            for i in range(len(page_qs)):
+                q_code, y0 = page_qs[i]
+                if i < len(page_qs) - 1:
+                    y1 = page_qs[i+1][1] - 10 # Stop right before the next question
+                else:
+                    y1 = y0 + 160 # Default height for the last question on the page
+                    if y1 > page.rect.height:
+                        y1 = page.rect.height
+                
+                # Ensure a minimum height so small questions don't get squashed
+                if y1 - y0 < 40:
+                    y1 = y0 + 80
+                    
+                q_locations[q_code] = (page_num, max(0, y0 - 15), min(page.rect.height, y1))
+        
+        # Take the actual high-res screenshots
+        for q_code, (page_num, y0, y1) in q_locations.items():
+            page = doc[page_num]
+            rect = fitz.Rect(0, y0, page.rect.width, y1)
+            # 300 DPI crop for high-fidelity zoom
+            pix = page.get_pixmap(clip=rect, dpi=300)
+            img_name = f"q_{q_code}.png"
+            pix.save(img_name)
+            q_images[q_code] = img_name
+            
+    except Exception as e:
+        st.warning(f"Error reading PDF: {e}")
+        
+    # Safe fallback if a question couldn't be located automatically
+    for q in valid_qs:
+        if q not in q_images:
+            q_images[q] = create_question_image(q, f"Question {q}\n\n(Could not automatically crop from PDF.\nPlease refer to original paper.)", font_size)
+            
+    return q_images
+
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
     
-    # 1. Dynamically build Q Labels from Row 1 and Row 2
     row0 = df_marks.iloc[0].astype(str).tolist()
     row1 = df_marks.iloc[1].astype(str).tolist()
     
@@ -158,7 +202,6 @@ def process_data(uploaded_csv, uploaded_mapping):
 
     full_marks_row = df_marks.iloc[2]
     
-    # 2. Dynamically find percentage row
     percentage_idx = None
     for i in range(len(df_marks)):
         cell_val = str(df_marks.iloc[i, 0]).strip().lower()
@@ -237,11 +280,11 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         try:
-            with st.spinner("Analyzing Exam Files..."):
+            with st.spinner("Taking screenshots from PDF..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 
-                # Extract text directly from the uploaded PDF!
-                pdf_db = extract_questions_from_pdf(uploaded_pdf, q_labels)
+                # Pre-generate all image crops
+                q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 first_student = None
                 for _, row in student_rows.iterrows():
@@ -286,22 +329,23 @@ if preview_clicked:
                     st.markdown("#### 🎯 Personal Corrections")
                     if personal:
                         for q in personal:
-                            img_path = create_question_image(q, pdf_db.get(q, ""), selected_font_size)
-                            st.image(img_path)
-                            os.remove(img_path)
+                            st.image(q_images[q])
                     else:
                         st.success("No personal corrections needed!")
                     
                     st.markdown(f"#### 🏫 Whole-Class Reteaching (≤ {selected_threshold}%)")
                     if reteach:
                         for q in reteach:
-                            img_path = create_question_image(q, pdf_db.get(q, ""), selected_font_size)
-                            st.image(img_path)
-                            os.remove(img_path)
+                            st.image(q_images[q])
                     else:
                         st.success("No whole-class reteaching needed!")
                 else:
                     st.error("Could not find any valid students in the CSV.")
+                    
+                # Clean up preview images
+                for f in os.listdir():
+                    if f.startswith("q_") and f.endswith(".png"): os.remove(f)
+                    
         except Exception as e:
             st.error(f"Error reading files: {e}")
 
@@ -311,7 +355,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Reconstructing questions and generating files...'):
+            with st.spinner(f'Cropping PDF and generating files...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -320,9 +364,8 @@ if generate_clicked:
 
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 
-                # Extract text directly from the uploaded PDF!
-                pdf_db = extract_questions_from_pdf(uploaded_pdf, q_labels)
-                q_images = {q: create_question_image(q, pdf_db.get(q, ""), selected_font_size) for q in q_labels if q not in ["Surname", "Forename"]}
+                # Take actual screenshots from the PDF!
+                q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 doc = Document()
                 
