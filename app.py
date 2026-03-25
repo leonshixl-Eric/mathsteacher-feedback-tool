@@ -15,7 +15,6 @@ import os
 import re
 import textwrap
 from io import BytesIO
-from PIL import Image, ImageChops
 
 # --- FIX FOR PYTHON 3.13 & PYMUPDF ---
 try:
@@ -29,18 +28,18 @@ except ImportError:
     sys.modules['imghdr'] = MockImghdr()
 
 try:
-    import fitz  # PyMuPDF for PDF reading and image cropping
+    import fitz  # PyMuPDF for reading text only (no cropping!)
 except ImportError:
     fitz = None
 
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Auto-scans the PDF for question text and diagrams. Absent students are automatically skipped.")
+st.write("Auto-reads questions from your PDF and reconstructs them with beautiful math formatting. Absent students are skipped.")
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
-uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (For Text & Diagrams)", type="pdf")
+uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (To read the text)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 # --- BRANDING SETTINGS ---
@@ -73,7 +72,7 @@ threshold_decimal = selected_threshold / 100.0
 # --- 2. THE RECONSTRUCTION ENGINE ---
 
 def build_dynamic_db(pdf_file, q_labels):
-    """Scans the PDF, extracts the text, and applies Math Auto-Fixing."""
+    """Reads the PDF text, matches it to your questions, and applies Math formatting."""
     db = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
@@ -91,7 +90,7 @@ def build_dynamic_db(pdf_file, q_labels):
         blocks.sort(key=lambda b: b[1])
         
         for b in blocks:
-            if b[6] == 1: continue # Skip images for text extraction
+            if b[6] == 1: continue  # Completely ignore images/diagrams
             text = b[4].strip()
             if not text: continue
             
@@ -101,6 +100,7 @@ def build_dynamic_db(pdf_file, q_labels):
                 if not m: continue
                 num, let = m.groups()
                 
+                # Check if this text block looks like the start of a question
                 if let:
                     if re.search(rf"^\s*(?:Question\s+|Q)?{num}\s*[\.\-\)]?\s*\(?{let}\)?", text, re.IGNORECASE):
                         found_q = q; break
@@ -111,12 +111,13 @@ def build_dynamic_db(pdf_file, q_labels):
                         found_q = q; break
                         
             if found_q:
+                # Save the previous question's text before starting a new one
                 if current_q and current_text:
                     db[current_q] = "\n".join(current_text)
                 current_q = found_q
                 current_text = [text]
             elif current_q:
-                # Stop if it hits a marks indicator
+                # Stop grabbing text if we hit a marks indicator (e.g., "[2]")
                 if re.search(r"^\[\d+\]$|^\(\d+\s*marks?\)$|total.*marks", text, re.IGNORECASE):
                     db[current_q] = "\n".join(current_text)
                     current_q = None
@@ -124,26 +125,31 @@ def build_dynamic_db(pdf_file, q_labels):
                 else:
                     current_text.append(text)
                     
+    # Catch the very last question on the paper
     if current_q and current_text:
         db[current_q] = "\n".join(current_text)
         
+    # Format the extracted text beautifully
     for q in valid_qs:
         if q in db:
             raw = db[q]
             # Fix PDF line breaks
             raw = re.sub(r'(?<![\.\?\!\:])\n(?!\n)', ' ', raw)
-            # Math Auto-Fixer: Converts x2 to $x^2$, y3 to $y^3$
+            # Math Auto-Fixer: Converts x2 to $x^2$, y3 to $y^3$ for the math engine
             clean = re.sub(r'\b([a-zA-Z])([2345])\b', r'$\1^\2$', raw)
+            
+            # Ensure the question number is clearly stated at the start
             if not clean.lower().startswith(q.lower()):
                 clean = f"{q}) {clean}"
+                
             db[q] = textwrap.fill(clean, width=65)
         else:
-            db[q] = f"Question {q}"
+            db[q] = f"Question {q} (Could not locate in PDF text)"
             
     return db
 
 def create_text_image(q_code, font_size, dynamic_db):
-    """Generates the text image from the auto-scanned database."""
+    """Generates a pure text, high-fidelity snippet using Matplotlib."""
     text = dynamic_db.get(q_code, f"Question {q_code}")
     line_count = text.count('\n') + 1
     base_padding = 0.24 
@@ -159,44 +165,6 @@ def create_text_image(q_code, font_size, dynamic_db):
     plt.savefig(img_name, dpi=200, bbox_inches='tight')
     plt.close()
     return img_name
-
-def capture_diagram_from_pdf(pdf_file, q_code):
-    """Scans PDF for photos/graphs/diagrams specific to a question."""
-    if not pdf_file or not fitz: return None
-    try:
-        pdf_file.seek(0)
-        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-        m = re.match(r"(\d+)([a-zA-Z]*)", q_code)
-        if not m: return None
-        num, let = m.groups()
-
-        for page in doc:
-            text_instances = page.search_for(num)
-            if not text_instances: continue
-            q_start_y = text_instances[0].y0
-            
-            drawings = [d for d in page.get_drawings() if d['rect'].y0 > q_start_y - 10]
-            images = [i for i in page.get_images() if page.get_image_bbox(i).y0 > q_start_y - 10]
-            
-            if drawings or images:
-                y0, y1 = q_start_y, q_start_y + 250 
-                if drawings: y1 = max([d['rect'].y1 for d in drawings]) + 10
-                
-                rect = fitz.Rect(0, y0 + 15, page.rect.width, min(y1 + 20, page.rect.height))
-                pix = page.get_pixmap(clip=rect, dpi=200)
-                img_name = f"diag_{q_code}.png"
-                pix.save(img_name)
-                
-                im = Image.open(img_name)
-                bg = Image.new(im.mode, im.size, (255, 255, 255))
-                diff = ImageChops.difference(im, bg)
-                bbox = diff.getbbox()
-                if bbox:
-                    im = im.crop(bbox)
-                    im.save(img_name)
-                    return img_name
-        return None
-    except: return None
 
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
@@ -215,7 +183,7 @@ def process_data(uploaded_csv, uploaded_mapping):
     percentage_idx = next(i for i in range(len(df_marks)) if 'percentage' in str(df_marks.iloc[i, 0]).lower())
     percentage_row = df_marks.iloc[percentage_idx]
     
-    # Filter out students with blank marks
+    # Filter out absent students (blank marks)
     raw_students = df_marks.iloc[3:percentage_idx].dropna(subset=[0, 1], how='all')
     student_rows = raw_students[raw_students.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
     
@@ -239,22 +207,15 @@ def process_data(uploaded_csv, uploaded_mapping):
         if idxs: dynamic_areas.append((topic, idxs))
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
-def add_multi_image_block(doc, q_code, font_size, dynamic_db, pdf_file):
-    """Adds reconstructed text + PDF diagram to Word."""
-    txt_img = create_text_image(q_code, font_size, dynamic_db)
-    diag_img = capture_diagram_from_pdf(pdf_file, q_code)
-    
-    p1 = doc.add_paragraph()
-    p1.add_run().add_picture(txt_img, width=Cm(12))
-    os.remove(txt_img)
-    
-    if diag_img:
-        p2 = doc.add_paragraph()
-        p2.paragraph_format.left_indent = Cm(1.0)
-        p2.add_run().add_picture(diag_img, width=Cm(10))
-        os.remove(diag_img)
+def add_tight_picture(doc, img_path, width):
+    paragraph = doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Cm(0.3)
+    paragraph.paragraph_format.space_after = Cm(0.3)
+    run = paragraph.add_run()
+    run.add_picture(img_path, width=width)
+    return paragraph
 
-# --- UI LOGIC ---
+# --- 3. UI LOGIC ---
 col1, col2 = st.columns(2)
 with col1: preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
 with col2: generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
@@ -269,7 +230,7 @@ if preview_clicked or generate_clicked:
             if student_rows.empty:
                 st.warning("No students with marks were found.")
             else:
-                with st.spinner("Scanning PDF Text and Diagrams..."):
+                with st.spinner("Reading Text from PDF..."):
                     dynamic_db = build_dynamic_db(uploaded_pdf, q_labels)
 
                 if preview_clicked:
@@ -286,11 +247,11 @@ if preview_clicked or generate_clicked:
                         preview_data.append({"Topic": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
                     st.table(pd.DataFrame(preview_data))
 
-                    st.markdown("#### Preview Scanned Text & Diagrams")
+                    st.markdown("#### Preview Reconstructed Questions (EBI)")
                     for q in student_ebi[:3]:
-                        st.image(create_text_image(q, selected_font_size, dynamic_db))
-                        diag = capture_diagram_from_pdf(uploaded_pdf, q)
-                        if diag: st.image(diag); os.remove(diag)
+                        img = create_text_image(q, selected_font_size, dynamic_db)
+                        st.image(img)
+                        os.remove(img)
 
                 if generate_clicked:
                     with st.spinner(f"Generating pack for {len(student_rows)} students..."):
@@ -330,12 +291,18 @@ if preview_clicked or generate_clicked:
                             
                             if personal_qs:
                                 doc.add_heading("Personal correction", 2)
-                                for q in personal_qs: add_multi_image_block(doc, q, selected_font_size, dynamic_db, uploaded_pdf)
+                                for q in personal_qs: 
+                                    img = create_text_image(q, selected_font_size, dynamic_db)
+                                    add_tight_picture(doc, img, width=Cm(14))
+                                    os.remove(img)
                             
                             doc.add_page_break()
                             doc.add_heading(f"Whole-class reteaching - {name}", 1)
                             if reteach_qs:
-                                for q in reteach_qs: add_multi_image_block(doc, q, selected_font_size, dynamic_db, uploaded_pdf)
+                                for q in reteach_qs: 
+                                    img = create_text_image(q, selected_font_size, dynamic_db)
+                                    add_tight_picture(doc, img, width=Cm(15))
+                                    os.remove(img)
                             else: doc.add_paragraph("Excellent mastery of class-wide topics.")
                             doc.add_page_break()
 
@@ -347,9 +314,7 @@ if preview_clicked or generate_clicked:
                         for q in global_reteach:
                             slide = prs.slides.add_slide(prs.slide_layouts[6])
                             txt_img = create_text_image(q, selected_font_size, dynamic_db)
-                            slide.shapes.add_picture(txt_img, PptxCm(1), PptxCm(1), width=PptxCm(20))
-                            diag_img = capture_diagram_from_pdf(uploaded_pdf, q)
-                            if diag_img: slide.shapes.add_picture(diag_img, PptxCm(3), PptxCm(6), width=PptxCm(18)); os.remove(diag_img)
+                            slide.shapes.add_picture(txt_img, PptxCm(1), PptxCm(2), width=PptxCm(20))
                             os.remove(txt_img)
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
