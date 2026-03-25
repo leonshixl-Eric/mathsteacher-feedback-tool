@@ -4,6 +4,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
+import numpy as np
+from PIL import Image
 from docx import Document
 from docx.shared import Cm, Pt
 from docx.oxml.ns import qn
@@ -14,8 +16,6 @@ import zipfile
 import os
 import re
 from io import BytesIO
-# --- NEW: Import Image Libraries for Auto-Cropping ---
-from PIL import Image, ImageChops
 
 # --- FIX FOR PYTHON 3.13 & PYMUPDF ---
 try:
@@ -72,6 +72,37 @@ threshold_decimal = selected_threshold / 100.0
 
 # --- 2. THE RECONSTRUCTION ENGINE ---
 
+def crop_vertical_whitespace(image_path):
+    """Scans the image and aggressively cuts off blank space at the top and bottom."""
+    try:
+        img = Image.open(image_path)
+        img_arr = np.array(img)
+        
+        # Convert to grayscale
+        if len(img_arr.shape) == 3:
+            gray = np.mean(img_arr, axis=2)
+        else:
+            gray = img_arr
+            
+        # Find the darkest pixel in each row. If it's < 240, that row has ink/content.
+        row_min = np.min(gray, axis=1)
+        content_rows = np.argwhere(row_min < 240)
+        
+        if content_rows.size > 0:
+            y0 = content_rows.min()
+            y1 = content_rows.max() + 1
+            
+            # Add a small 15-pixel padding so it doesn't cut into the letters
+            pad = 15
+            y0 = max(0, int(y0) - pad)
+            y1 = min(img.height, int(y1) + pad)
+            
+            # Crop ONLY the vertical space, keeping the full horizontal width
+            cropped = img.crop((0, y0, img.width, y1))
+            cropped.save(image_path)
+    except Exception as e:
+        pass # If the crop fails, just safely use the original image
+
 def create_question_image(q_code, text, font_size):
     """Fallback generator if the PDF crop fails."""
     line_count = text.count('\n') + 1
@@ -90,7 +121,7 @@ def create_question_image(q_code, text, font_size):
     return img_name
 
 def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
-    """Scans the PDF, screenshots the question, and aggressively crops white space."""
+    """Scans the PDF, crops the question, and trims the blank working space."""
     q_images = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
@@ -146,7 +177,7 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
                 if i < len(page_qs) - 1:
                     y1 = page_qs[i+1][1] - 10 
                 else:
-                    y1 = y0 + 160 
+                    y1 = y0 + 200 # Grab a large chunk, the Auto-Trimmer will cut the excess later!
                     if y1 > page.rect.height:
                         y1 = page.rect.height
                 
@@ -162,23 +193,9 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
             img_name = f"q_{q_code}.png"
             pix.save(img_name)
             
-            # --- NEW: AUTO-TRIM WHITE SPACE ---
-            try:
-                im = Image.open(img_name)
-                # Create a pure white background image
-                bg = Image.new(im.mode, im.size, (255, 255, 255))
-                # Find the difference between our screenshot and the pure white background
-                diff = ImageChops.difference(im, bg)
-                bbox = diff.getbbox()
-                if bbox:
-                    # Add 15 pixels of breathing room around the ink
-                    pad = 15 
-                    bbox = (max(0, bbox[0]-pad), max(0, bbox[1]-pad), min(im.size[0], bbox[2]+pad), min(im.size[1], bbox[3]+pad))
-                    im = im.crop(bbox)
-                    im.save(img_name)
-            except Exception as e:
-                pass # If trim fails, just use the original image
-                
+            # --- NEW: Call the Auto-Trimmer to slice off the student working space! ---
+            crop_vertical_whitespace(img_name)
+            
             q_images[q_code] = img_name
             
     except Exception as e:
@@ -271,23 +288,12 @@ def process_data(uploaded_csv, uploaded_mapping):
             
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
-def add_tight_picture(doc, img_path, max_width_cm):
-    """Adds image to word document, using Smart Scaling to prevent huge stretched text."""
+def add_tight_picture(doc, img_path, width):
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_before = Cm(0.3)
     paragraph.paragraph_format.space_after = Cm(0.3)
     run = paragraph.add_run()
-    
-    # Calculate physical width to match real paper scale
-    try:
-        with Image.open(img_path) as img:
-            dpi = 300.0  # We generated it at 300 DPI
-            img_width_cm = (img.size[0] / dpi) * 2.54
-            final_width = min(img_width_cm, max_width_cm.inches * 2.54) # Cap it at page margins
-    except:
-        final_width = 12.0 # Fallback
-        
-    run.add_picture(img_path, width=Cm(final_width))
+    run.add_picture(img_path, width=width)
     return paragraph
 
 # --- 3. BUTTON LAYOUT ---
@@ -303,8 +309,9 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         try:
-            with st.spinner("Taking tight screenshots from PDF..."):
+            with st.spinner("Taking screenshots from PDF..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+                
                 q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 first_student = None
@@ -363,7 +370,6 @@ if preview_clicked:
                 else:
                     st.error("Could not find any valid students in the CSV.")
                     
-                # Clean up preview images
                 for f in os.listdir():
                     if f.startswith("q_") and f.endswith(".png"): os.remove(f)
                     
@@ -376,7 +382,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Auto-cropping PDF and generating files...'):
+            with st.spinner(f'Cropping PDF and generating files...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
@@ -384,9 +390,11 @@ if generate_clicked:
                         f.write(uploaded_logo.getbuffer())
 
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
+                
                 q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
                 doc = Document()
+                
                 available_width_cm = 21.0 - (2 * selected_margin)
                 area_col_width = available_width_cm - 7.0 
                 col_widths = [Cm(area_col_width), Cm(3.5), Cm(3.5)]
@@ -453,7 +461,7 @@ if generate_clicked:
                         h_pers.paragraph_format.space_before = Cm(0)
                         
                         for q in personal:
-                            add_tight_picture(doc, q_images[q], personal_img_width)
+                            add_tight_picture(doc, q_images[q], width=personal_img_width)
 
                     doc.add_page_break()
                     
@@ -462,7 +470,7 @@ if generate_clicked:
                     
                     if reteach:
                         for q in reteach: 
-                            add_tight_picture(doc, q_images[q], reteach_img_width)
+                            add_tight_picture(doc, q_images[q], width=reteach_img_width)
                     else: doc.add_paragraph("Excellent mastery of class topics.")
                     doc.add_page_break()
 
@@ -489,19 +497,11 @@ if generate_clicked:
                             slide = prs.slides.add_slide(prs.slide_layouts[6])
                             
                             img_path = q_images[q]
+                            pic_left = PptxCm(2)
+                            pic_top = PptxCm(2.5) 
+                            pic_width = PptxCm(21.4) 
                             
-                            # --- PPTX Smart Image Sizing ---
-                            try:
-                                with Image.open(img_path) as img:
-                                    aspect = img.size[0] / img.size[1]
-                            except:
-                                aspect = 2.0
-                                
-                            # If it's a wide snippet, stretch width. If it's a tall block, restrict height.
-                            if aspect > 1.5:
-                                slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), width=PptxCm(21.4))
-                            else:
-                                slide.shapes.add_picture(img_path, PptxCm(2), PptxCm(2.5), height=PptxCm(13.0))
+                            slide.shapes.add_picture(img_path, pic_left, pic_top, width=pic_width)
                         
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
