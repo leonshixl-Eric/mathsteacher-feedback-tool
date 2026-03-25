@@ -13,10 +13,9 @@ from pptx.util import Cm as PptxCm, Pt as PptxPt
 import zipfile
 import os
 import re
-import textwrap
 from io import BytesIO
 
-# --- FIX FOR PYTHON 3.13 & PYMUPDF ---
+# --- FIX FOR PYTHON 3.13 ---
 try:
     import imghdr
 except ImportError:
@@ -27,19 +26,14 @@ except ImportError:
             return kind.extension if kind else None
     sys.modules['imghdr'] = MockImghdr()
 
-try:
-    import fitz  # PyMuPDF for reading text
-except ImportError:
-    fitz = None
-
 st.set_page_config(page_title="Maths Feedback Pro", layout="centered", page_icon="📊")
 
 st.title("📊 High-Fidelity Feedback Generator")
-st.write("Auto-reads questions from your PDF and reconstructs them with beautiful math formatting. Absent students are skipped.")
+st.write("Reconstructs flawless math questions as images. Absent students are automatically skipped.")
 
 # --- 1. THE UPLOADERS ---
 uploaded_csv = st.file_uploader("1. Upload Marks (CSV or Excel)", type=["csv", "xlsx"])
-uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (To read the exact text)", type="pdf")
+uploaded_pdf = st.file_uploader("2. Upload Original Exam PDF (Optional - Reference Only)", type="pdf")
 uploaded_mapping = st.file_uploader("3. Upload Topic Mapping (CSV or Excel)", type=["csv", "xlsx"])
 
 # --- BRANDING SETTINGS ---
@@ -69,9 +63,10 @@ st.markdown("---")
 
 threshold_decimal = selected_threshold / 100.0
 
-# --- 2. THE RECONSTRUCTION ENGINE ---
-
-# Fallback Database (In case the PDF is a scanned image without readable text)
+# =====================================================================
+# 🛑 TEACHER INSTRUCTIONS: TYPE YOUR EXACT EXAM QUESTIONS HERE 🛑
+# Use $...$ for beautiful math formatting (e.g., $x^2$ or $\equiv$)
+# =====================================================================
 questions_db = {
     "1a": r"1a) Expand $3(x + 5)$",
     "1b": r"1b) Expand $4(2y - 3)$",
@@ -84,109 +79,13 @@ questions_db = {
     "6":  r"6) Expand and simplify $3(x + 2) + 2(x - 1)$",
     "7":  r"7) Solve $x^2 + 5x + 6 = 0$",
     "8":  r"8) The length of a rectangle is $(x+5)$ and the width is $(x+2)$." + "\n" + r"      Write an expression for the Area.",
-    "9":  r"9) Expand $(x + 1)(x + 2)(x + 3)$"
+    "9":  r"9) Show that $(x + 1)(x + 2)(x + 3) \equiv x^3 + 6x^2 + 11x + 6$" # <--- Identity sign example!
 }
+# =====================================================================
 
-def build_dynamic_db(pdf_file, q_labels):
-    """Smart Multi-Line Scanner: Reads PDF text, pieces together disconnected numbers, and formats math."""
-    db = {}
-    valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
-    
-    if not pdf_file or not fitz:
-        return {q: questions_db.get(q, f"Question {q} (PDF missing)") for q in valid_qs}
-        
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    pdf_file.seek(0)
-    
-    full_text = ""
-    for page in doc:
-        full_text += page.get_text("text") + "\n"
-        
-    if not full_text.strip():
-        # The PDF is an image scan, fallback to the database!
-        return {q: questions_db.get(q, f"Question {q} (Scanned PDF, no text found)") for q in valid_qs}
-        
-    lines = full_text.split('\n')
-    
-    main_q = None
-    current_q = None
-    current_text = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line: continue
-        
-        # 1. Remember the main question number (e.g., "1" on a line by itself)
-        main_match = re.match(r"^(?:Question\s+|Q)?(\d+)\s*[\.\-\)]?$", line, re.IGNORECASE)
-        if main_match:
-            main_q = main_match.group(1)
-            
-        found_q = None
-        for q in valid_qs:
-            m = re.match(r"(\d+)([a-zA-Z]*)", q)
-            if not m: continue
-            num, let = m.groups()
-            
-            if let:
-                # Matches "1a" or "1(a)" on a single line
-                pat1 = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*\(?{let}\)?(?:\s|$|\.)"
-                # Matches "(a)" if the scanner already remembers that we are on question "1"
-                pat2 = rf"^\s*\(?{let}\)?(?:\s|$|\.)"
-                
-                if re.match(pat1, line, re.IGNORECASE):
-                    found_q = q; main_q = num; break
-                elif main_q == num and re.match(pat2, line, re.IGNORECASE):
-                    found_q = q; break
-            else:
-                pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?(?:\s|$)"
-                if re.match(pat, line, re.IGNORECASE):
-                    found_q = q; main_q = num; break
-                    
-        if found_q:
-            if current_q and current_text:
-                db[current_q] = "\n".join(current_text)
-            current_q = found_q
-            
-            # Strip the numbering from the text so it doesn't duplicate
-            m = re.match(r"(\d+)([a-zA-Z]*)", found_q)
-            num, let = m.groups()
-            if let:
-                line = re.sub(rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*\(?{let}\)?(?:\s|$|\.)", "", line, flags=re.IGNORECASE).strip()
-                line = re.sub(rf"^\s*\(?{let}\)?(?:\s|$|\.)", "", line, flags=re.IGNORECASE).strip()
-            else:
-                line = re.sub(rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?(?:\s|$)", "", line, flags=re.IGNORECASE).strip()
-                
-            current_text = [line] if line else []
-        elif current_q:
-            # Stop grabbing text if we hit the Marks Box (e.g., "[2]")
-            if re.match(r"^\[\d+\]$|^\(\d+\s*marks?\)$|^total.*marks", line, re.IGNORECASE):
-                db[current_q] = "\n".join(current_text)
-                current_q = None
-                current_text = []
-            else:
-                current_text.append(line)
-                
-    if current_q and current_text:
-        db[current_q] = "\n".join(current_text)
-        
-    # Post-process and apply the Math Fixer
-    final_db = {}
-    for q in valid_qs:
-        if q in db and db[q].strip():
-            raw = db[q]
-            raw = re.sub(r'(?<![\.\?\!\:\=])\n(?!\n)', ' ', raw).strip()
-            # Converts x2 to $x^2$ for the Math Engine
-            clean = re.sub(r'\b([a-zA-Z])([2345])\b', r'$\1^\2$', raw)
-            final_db[q] = textwrap.fill(f"{q}) {clean}", width=65)
-        else:
-            # If the PDF reader missed it, safely fallback to the database
-            final_db[q] = questions_db.get(q, f"Question {q} (Could not locate in PDF text)")
-            
-    return final_db
-
-def create_text_image(q_code, font_size, dynamic_db):
-    """Generates a pure text, high-fidelity snippet using Matplotlib."""
-    text = dynamic_db.get(q_code, f"Question {q_code}")
+def create_question_image(q_code, font_size):
+    """Generates a perfect, high-fidelity math snippet image."""
+    text = questions_db.get(q_code, f"Question {q_code}\n(Please update the code with the question text)")
     line_count = text.count('\n') + 1
     base_padding = 0.24 
     height_per_line = font_size * 0.035 
@@ -197,50 +96,73 @@ def create_text_image(q_code, font_size, dynamic_db):
     plt.axis('off')
     plt.tight_layout(pad=0)
     
-    img_name = f"txt_{q_code}.png"
+    img_name = f"q_{q_code}.png"
     plt.savefig(img_name, dpi=200, bbox_inches='tight')
     plt.close()
     return img_name
 
 def process_data(uploaded_csv, uploaded_mapping):
     df_marks = pd.read_csv(uploaded_csv, header=None) if uploaded_csv.name.endswith('.csv') else pd.read_excel(uploaded_csv, header=None)
-    row0, row1 = df_marks.iloc[0].astype(str).tolist(), df_marks.iloc[1].astype(str).tolist()
+    
+    row0 = df_marks.iloc[0].astype(str).tolist()
+    row1 = df_marks.iloc[1].astype(str).tolist()
+    
     q_labels = ["Surname", "Forename"]
     current_q = ""
+    
     for i in range(2, len(row0)):
-        r0, r1 = row0[i].strip(), row1[i].strip()
-        if 'total' in r0.lower() or 'total' in r1.lower(): break
+        r0 = row0[i].strip()
+        r1 = row1[i].strip()
+        if r0.lower() == 'total' or r1.lower() == 'total': break
         if r0 != 'nan' and r0 != '':
             m = re.search(r'\d+', r0)
             if m: current_q = m.group()
-        q_labels.append((current_q + r1) if r1 != 'nan' and r1 != '' else current_q)
+        if r1 != 'nan' and r1 != '': q_labels.append(current_q + r1)
+        else: q_labels.append(current_q)
 
     full_marks_row = df_marks.iloc[2]
-    percentage_idx = next(i for i in range(len(df_marks)) if 'percentage' in str(df_marks.iloc[i, 0]).lower())
+    
+    percentage_idx = None
+    for i in range(len(df_marks)):
+        if 'percentage' in str(df_marks.iloc[i, 0]).lower():
+            percentage_idx = i
+            break
+    
+    if percentage_idx is None:
+        raise ValueError("Could not find row starting with 'Percentage'")
+        
     percentage_row = df_marks.iloc[percentage_idx]
     
-    # Skip Absent Students
-    raw_students = df_marks.iloc[3:percentage_idx].dropna(subset=[0, 1], how='all')
-    student_rows = raw_students[raw_students.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
+    # Filter out students with blank marks in the question columns
+    raw_student_rows = df_marks.iloc[3:percentage_idx].dropna(subset=[0, 1], how='all')
+    student_rows = raw_student_rows[raw_student_rows.iloc[:, 2:len(q_labels)].notnull().any(axis=1)].reset_index(drop=True)
     
     df_map = pd.read_csv(uploaded_mapping, header=None) if uploaded_mapping.name.endswith('.csv') else pd.read_excel(uploaded_mapping, header=None)
-    if 'topic' in str(df_map.iloc[0, 0]).lower(): df_map = df_map.iloc[1:]
+    if 'topic' in str(df_map.iloc[0, 0]).lower():
+        df_map = df_map.iloc[1:].reset_index(drop=True)
 
     dynamic_areas = []
     for _, map_row in df_map.iterrows():
         if pd.isna(map_row.iloc[0]): continue
-        topic, qs, last_num = str(map_row.iloc[0]).strip(), [], ""
+        topic = str(map_row.iloc[0]).strip()
+        qs = []
+        last_num = ""
         for cell in map_row.iloc[1:]:
             if pd.isna(cell): continue
-            for t in str(cell).lower().replace('and', ',').replace('&', ',').split(','):
-                t = t.strip()
-                n = "".join([c for c in t if c.isdigit()])
-                l = "".join([c for c in t if c.isalpha()])
-                if n: last_num = n
-                cand = (n or last_num) + l
-                if cand in q_labels and cand not in qs: qs.append(cand)
-        idxs = [q_labels.index(q) for q in qs]
-        if idxs: dynamic_areas.append((topic, idxs))
+            tokens = str(cell).lower().replace('and', ',').replace('&', ',').split(',')
+            for t in tokens:
+                t = t.strip().replace(" ", "")
+                if not t: continue
+                num_part = "".join([c for c in t if c.isdigit()])
+                let_part = "".join([c for c in t if c.isalpha()])
+                if num_part: last_num = num_part
+                candidate = (num_part or last_num) + let_part
+                if candidate in q_labels and candidate not in qs:
+                    qs.append(candidate)
+        
+        indices = [q_labels.index(q) for q in qs]
+        if indices: dynamic_areas.append((topic, indices))
+            
     return student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas
 
 def add_tight_picture(doc, img_path, width):
@@ -251,28 +173,29 @@ def add_tight_picture(doc, img_path, width):
     run.add_picture(img_path, width=width)
     return paragraph
 
-# --- 3. UI LOGIC ---
+# --- 3. UI BUTTONS ---
 col1, col2 = st.columns(2)
-with col1: preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
-with col2: generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
+with col1:
+    preview_clicked = st.button("👀 Preview Sample Student", use_container_width=True)
+with col2:
+    generate_clicked = st.button("📄 Generate All Feedback", type="primary", use_container_width=True)
 
+# --- 4. LOGIC ---
 if preview_clicked or generate_clicked:
-    if not (uploaded_csv and uploaded_pdf and uploaded_mapping):
-        st.error("Please upload all 3 files (Marks, PDF, and Mapping).")
+    if not (uploaded_csv and uploaded_mapping):
+        st.error("Please upload the Marks and Mapping files.")
     else:
         try:
             student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
             
             if student_rows.empty:
-                st.warning("No students with marks were found.")
+                st.warning("No students with recorded marks were found.")
             else:
-                with st.spinner("Scanning Text from PDF..."):
-                    dynamic_db = build_dynamic_db(uploaded_pdf, q_labels)
-
                 if preview_clicked:
                     row = student_rows.iloc[0]
                     name = f"{row[1]} {row[0]}"
                     st.markdown(f"### Preview Feedback: **{name}**")
+                    
                     student_ebi = []
                     preview_data = []
                     for title, idxs in dynamic_areas:
@@ -280,18 +203,29 @@ if preview_clicked or generate_clicked:
                         for idx in idxs:
                             if pd.to_numeric(row[idx], errors='coerce') >= pd.to_numeric(full_marks_row[idx], errors='coerce'):
                                 w.append(q_labels[idx])
-                            else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                            else:
+                                e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
                         preview_data.append({"Topic": title, "What Went Well": ", ".join(w), "Even Better If": ", ".join(e)})
+                    
                     st.table(pd.DataFrame(preview_data))
-
-                    st.markdown("#### Preview Reconstructed Questions (EBI)")
-                    for q in student_ebi[:3]:
-                        img = create_text_image(q, selected_font_size, dynamic_db)
+                    
+                    reteach_list = [q for q in student_ebi if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+                    personal_list = [q for q in student_ebi if q not in reteach_list]
+                    
+                    st.markdown("#### 🎯 Personal Corrections (Even Better If)")
+                    for q in personal_list:
+                        img = create_question_image(q, selected_font_size)
+                        st.image(img)
+                        os.remove(img)
+                    
+                    st.markdown(f"#### 🏫 Whole-Class Reteaching (Class Avg ≤ {selected_threshold}%)")
+                    for q in reteach_list:
+                        img = create_question_image(q, selected_font_size)
                         st.image(img)
                         os.remove(img)
 
                 if generate_clicked:
-                    with st.spinner(f"Generating pack for {len(student_rows)} students..."):
+                    with st.spinner(f"Generating reports for {len(student_rows)} students..."):
                         logo_path = None
                         if uploaded_logo:
                             logo_path = "temp_logo.png"
@@ -303,10 +237,15 @@ if preview_clicked or generate_clicked:
 
                         for _, row in student_rows.iterrows():
                             name = f"{row[1]} {row[0]}"
+                            
                             header = doc.add_paragraph()
-                            if logo_path: header.add_run().add_picture(logo_path, width=Cm(1.5)); header.add_run("    ")
+                            if logo_path:
+                                run = header.add_run()
+                                run.add_picture(logo_path, width=Cm(1.5))
+                                run.add_text("    ")
                             title_run = header.add_run(f"{unit_title} Feedback: {name}   |   Class: {class_name}")
-                            title_run.bold, title_run.font.size = True, Pt(14)
+                            title_run.bold = True
+                            title_run.font.size = Pt(14)
                             
                             table = doc.add_table(rows=1, cols=3)
                             table.style = 'Table Grid'
@@ -319,7 +258,8 @@ if preview_clicked or generate_clicked:
                                 for idx in idxs:
                                     if pd.to_numeric(row[idx], errors='coerce') >= pd.to_numeric(full_marks_row[idx], errors='coerce'):
                                         w.append(q_labels[idx])
-                                    else: e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
+                                    else:
+                                        e.append(q_labels[idx]); student_ebi.append(q_labels[idx])
                                 r = table.add_row().cells
                                 r[0].text, r[1].text, r[2].text = title, ", ".join(w), ", ".join(e)
 
@@ -328,19 +268,22 @@ if preview_clicked or generate_clicked:
                             
                             if personal_qs:
                                 doc.add_heading("Personal correction", 2)
-                                for q in personal_qs: 
-                                    img = create_text_image(q, selected_font_size, dynamic_db)
+                                for q in personal_qs:
+                                    img = create_question_image(q, selected_font_size)
                                     add_tight_picture(doc, img, width=Cm(14))
                                     os.remove(img)
                             
                             doc.add_page_break()
+                            
                             doc.add_heading(f"Whole-class reteaching - {name}", 1)
                             if reteach_qs:
-                                for q in reteach_qs: 
-                                    img = create_text_image(q, selected_font_size, dynamic_db)
+                                for q in reteach_qs:
+                                    img = create_question_image(q, selected_font_size)
                                     add_tight_picture(doc, img, width=Cm(15))
                                     os.remove(img)
-                            else: doc.add_paragraph("Excellent mastery of class-wide topics.")
+                            else:
+                                doc.add_paragraph("Excellent mastery of class-wide topics.")
+                            
                             doc.add_page_break()
 
                         target_docx = BytesIO()
@@ -350,20 +293,23 @@ if preview_clicked or generate_clicked:
                         global_reteach = [q for q in q_labels[2:] if pd.to_numeric(percentage_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                         for q in global_reteach:
                             slide = prs.slides.add_slide(prs.slide_layouts[6])
-                            txt_img = create_text_image(q, selected_font_size, dynamic_db)
-                            slide.shapes.add_picture(txt_img, PptxCm(1), PptxCm(2), width=PptxCm(20))
-                            os.remove(txt_img)
+                            img = create_question_image(q, selected_font_size)
+                            prs_img = slide.shapes.add_picture(img, PptxCm(1), PptxCm(2), width=PptxCm(23))
+                            os.remove(img)
+                        
                         target_pptx = BytesIO()
                         prs.save(target_pptx)
 
                         zip_buffer = BytesIO()
-                        safe_name = str(class_name).replace(" ", "_")
+                        safe_class = str(class_name).replace(" ", "_")
                         with zipfile.ZipFile(zip_buffer, "w") as z:
-                            z.writestr(f"{safe_name}_Reports.docx", target_docx.getvalue())
-                            if global_reteach: z.writestr(f"{safe_name}_Reteach.pptx", target_pptx.getvalue())
+                            z.writestr(f"{safe_class}_Feedback_Reports.docx", target_docx.getvalue())
+                            if global_reteach:
+                                z.writestr(f"{safe_class}_Reteach_Slides.pptx", target_pptx.getvalue())
                         
-                        st.success(f"✅ Feedback Pack Ready!")
-                        st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_name}_Pack.zip", type="primary")
+                        st.success(f"✅ Success! Feedback generated for {len(student_rows)} students.")
+                        st.download_button("📦 Download All (ZIP)", zip_buffer.getvalue(), file_name=f"{safe_class}_Pack.zip", type="primary")
+
                         if logo_path and os.path.exists(logo_path): os.remove(logo_path)
 
         except Exception as e:
