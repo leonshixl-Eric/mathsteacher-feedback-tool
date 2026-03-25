@@ -97,7 +97,6 @@ def process_data(csv, mapping):
     return students, perc_row, full_marks, q_labels, dyn_areas
 
 def scan_pdf_for_metadata(pdf_bytes, required_qs):
-    """One-pass scanner to find BOTH the page number and the instruction for each question."""
     pages_dict = {}
     titles_dict = {}
     page_count = 1
@@ -116,7 +115,6 @@ def scan_pdf_for_metadata(pdf_bytes, required_qs):
                     if not m: continue
                     num, let = m.groups()
                     
-                    # 1. Find the Page
                     if q not in pages_dict:
                         if let:
                             if f"{num}{let})" in clean_text or f"{num}({let})" in clean_text or f"{num}.{let}" in clean_text:
@@ -125,7 +123,6 @@ def scan_pdf_for_metadata(pdf_bytes, required_qs):
                             if f"question{num}" in clean_text or f"q{num}" in clean_text or f"\n{num})" in clean_text:
                                 pages_dict[q] = page_num
                                 
-                    # 2. Find the Instruction Title
                     if q not in titles_dict:
                         pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*([A-Za-z].*)"
                         for line in text.split('\n'):
@@ -137,7 +134,6 @@ def scan_pdf_for_metadata(pdf_bytes, required_qs):
         except:
             pass
             
-    # Fallbacks if scanner missed anything
     for q in required_qs:
         if q not in pages_dict: pages_dict[q] = 0
         if q not in titles_dict: titles_dict[q] = f"Question {q}"
@@ -178,10 +174,8 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
         for q in req_qs:
             st.markdown(f"### ✂️ Question {q}")
             
-            # 1. Editable Label
             st.session_state.q_titles[q] = st.text_input(f"Document Label for {q}", value=st.session_state.q_titles.get(q, ""), key=f"t_{q}")
             
-            # 2. Safely initialize the Page Number Widget state so it maps correctly
             widget_key = f"page_input_{q}"
             if widget_key not in st.session_state:
                 st.session_state[widget_key] = st.session_state.q_pages.get(q, 0) + 1
@@ -189,13 +183,11 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
             col_a, col_b = st.columns([2, 1])
             
             with col_a:
-                # Page Selector
                 p_val = st.number_input("Select Page", min_value=1, max_value=st.session_state.pdf_pages, key=widget_key)
                 page_idx = p_val - 1
                 
                 st.caption(f"👀 Now viewing Page {p_val}")
                 
-                # Fetch image and apply dynamic key to force unmount on page change
                 img = get_page_img(pdf_b, page_idx)
                 cropper_key = f"cropper_{q}_pg_{page_idx}"
                 cropped = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key=cropper_key)
@@ -262,7 +254,8 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         for q in personal_qs:
                             doc.add_paragraph().add_run(st.session_state.q_titles[q]).bold = True
                             img_data = BytesIO(st.session_state.saved_crops[q])
-                            doc.add_paragraph().add_run().add_picture(img_data, width=Cm(14))
+                            # Sized down to 70% (9.8 cm)
+                            doc.add_paragraph().add_run().add_picture(img_data, width=Cm(9.8))
 
                     doc.add_page_break()
                     doc.add_heading(f"Whole-class reteaching - {name}", 1)
@@ -270,7 +263,8 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         for q in reteach_qs:
                             doc.add_paragraph().add_run(st.session_state.q_titles[q]).bold = True
                             img_data = BytesIO(st.session_state.saved_crops[q])
-                            doc.add_paragraph().add_run().add_picture(img_data, width=Cm(15))
+                            # Sized down to 70% (10.5 cm)
+                            doc.add_paragraph().add_run().add_picture(img_data, width=Cm(10.5))
                     doc.add_page_break()
                     progress_bar.progress((i + 1) / len(students))
 
@@ -280,7 +274,8 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     txBox = slide.shapes.add_textbox(PptxCm(2), PptxCm(1), PptxCm(20), PptxCm(1.5))
                     txBox.text_frame.paragraphs[0].text = st.session_state.q_titles[q]
                     img_data = BytesIO(st.session_state.saved_crops[q])
-                    slide.shapes.add_picture(img_data, PptxCm(2), PptxCm(3), width=PptxCm(21))
+                    # Sized down to 70% (14.7 cm)
+                    slide.shapes.add_picture(img_data, PptxCm(2), PptxCm(3), width=PptxCm(14.7))
 
                 word_buf, ppt_buf, zip_buf = BytesIO(), BytesIO(), BytesIO()
                 doc.save(word_buf)
