@@ -89,7 +89,7 @@ def create_question_image(q_code, text, font_size):
     return img_name
 
 def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
-    """Scans the PDF, crops only the question text/diagrams, and ignores answering spaces."""
+    """Shrink-Wraps the specific text and diagrams for each question."""
     q_images = {}
     valid_qs = [q for q in q_labels if q not in ["Surname", "Forename"]]
     
@@ -102,108 +102,126 @@ def generate_question_images_from_pdf(pdf_file, q_labels, font_size):
         doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
         pdf_file.seek(0)
         
-        q_locations = {}
+        q_blocks = {q: [] for q in valid_qs}
         current_num = None 
+        pending_num_block = None
         
         for page_num in range(len(doc)):
             page = doc[page_num]
             blocks = page.get_text("blocks")
-            # Keep text blocks with actual text, or image blocks (type 1)
+            # Filter out completely empty blocks
             blocks = [b for b in blocks if (b[6] == 0 and str(b[4]).strip()) or b[6] == 1]
             blocks.sort(key=lambda b: b[1]) 
             
-            page_qs = []
+            current_q = None
+            last_y1 = 0
             
-            for idx, b in enumerate(blocks):
-                if b[6] == 1: continue # Skip images for text searching
-                text = str(b[4]).strip()
-                if not text: continue
+            for b in blocks:
+                is_image = (b[6] == 1)
+                text = str(b[4]).strip() if not is_image else ""
                 
-                # --- NEW: Ultra-Strict Main Number Tracking ---
-                # Only updates if it strictly looks like the start of a question: "Q2", "Question 5", or "3."
-                header_match = re.match(r"^\s*(?:Question\s+|Q)\s*(\d+)", text, re.IGNORECASE)
-                dot_match = re.match(r"^\s*(\d+)\s*[\)\.]", text)
+                found_new_q = None
                 
-                if header_match:
-                    current_num = header_match.group(1)
-                elif dot_match:
-                    current_num = dot_match.group(1)
-                    
-                for q in valid_qs:
-                    if q in q_locations or q in [x[0] for x in page_qs]:
-                        continue
+                if not is_image:
+                    # 1. Update Persistent Memory for the Main Question Number
+                    num_match = re.search(r"(?:^|\s)(?:Question\s+|Q)(\d+)\b|^\s*(\d+)\s*[\.\)](?:[\s]|$)", text[:40], re.IGNORECASE)
+                    if num_match:
+                        current_num = num_match.group(1) or num_match.group(2)
+                        pending_num_block = (page_num, b)
                         
-                    m = re.match(r"(\d+)([a-zA-Z]*)", q)
-                    if not m: continue
-                    num, let = m.groups()
-                    
-                    full_pat = re.compile(rf"(?:^|\n)\s*(?:Question\s+|Q)?0*{num}\s*[\(\.\-]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE)
-                    
-                    if full_pat.search(text):
-                        page_qs.append((q, idx, b[1]))
-                        current_num = num # Lock memory to this number
-                        break
-                    elif current_num == num and let:
-                        let_pat = re.compile(rf"(?:^|\n)\s*[\(\.]?\s*{let}\s*(?:[\)\.\-\s]|$)", re.IGNORECASE)
-                        if let_pat.search(text):
-                            page_qs.append((q, idx, b[1]))
-                            break
-
-            # Calculate safe crop bounds
-            for i in range(len(page_qs)):
-                q_code, start_idx, y0 = page_qs[i]
-                end_idx = page_qs[i+1][1] if i < len(page_qs) - 1 else len(blocks)
-                
-                bottom_y = blocks[start_idx][3]
-                
-                for k in range(start_idx + 1, end_idx):
-                    bk = blocks[k]
-                    
-                    # Only calculate gap if the block is actually below our current bottom
-                    if bk[1] > bottom_y:
-                        gap = bk[1] - bottom_y
+                    # 2. Check if this block starts a valid question
+                    for q in valid_qs:
+                        m = re.match(r"(\d+)([a-zA-Z]*)", q)
+                        if not m: continue
+                        num, let = m.groups()
                         
-                        # --- NEW: Increased gap threshold to 150 to bypass large diagrams ---
-                        if gap > 150:
-                            break
+                        if let:
+                            pat1 = re.compile(rf"(?:^|\s)(?:Question\s+|Q)?{num}\s*[\.\-\)]?\s*\(?{let}\)?(?:[\s\.\)]|$)", re.IGNORECASE)
+                            pat2 = re.compile(rf"^\s*\(?{let}\)?(?:[\s\.\)]|$)", re.IGNORECASE)
                             
-                    bk_text = str(bk[4]).strip() if bk[6] == 0 else ""
-                    mark_pat = r"^\[\d+\]$|^\(\d+\s*marks?\)$|^\d+\s*marks?$|^\(?total.*?\d+\s*marks?\)?$"
-                    if bk_text and re.match(mark_pat, bk_text, re.IGNORECASE):
-                        break 
-                        
-                    bottom_y = max(bottom_y, bk[3])
-                
-                # --- NEW: Added generous 35pt padding below to prevent text cutoffs ---
-                y1 = bottom_y + 35 
-                
-                if y1 - y0 < 40:
-                    y1 = y0 + 60
+                            if pat1.search(text[:40]):
+                                found_new_q = q
+                                current_num = num
+                                break
+                            elif current_num == num and pat2.search(text[:20]):
+                                found_new_q = q
+                                break
+                        else:
+                            pat = re.compile(rf"(?:^|\s)(?:Question\s+|Q)?{num}\s*[\.\-\)](?:[\s]|$)", re.IGNORECASE)
+                            if pat.search(text[:40]):
+                                found_new_q = q
+                                current_num = num
+                                break
+                                
+                if found_new_q:
+                    current_q = found_new_q
+                    # Ensure the main number block is included in the shrink wrap if they were separated
+                    if pending_num_block and pending_num_block not in q_blocks[current_q]:
+                        if pending_num_block[0] == page_num and pending_num_block[1][1] <= b[1] + 50:
+                            q_blocks[current_q].append(pending_num_block)
+                    pending_num_block = None
                     
-                q_locations[q_code] = (page_num, max(0, y0 - 15), min(page.rect.height, y1))
+                # 3. Check for termination triggers
+                is_mark = False
+                if not is_image:
+                    # Look for [2], (2 marks), Total 3 marks, etc.
+                    mark_pat = r"^\[\d+\]$|^\(\d+\)$|^\(\d+\s*marks?\)$|^\d+\s*marks?$|^\(?total.*?\d+\s*marks?\)?$"
+                    if re.search(mark_pat, text, re.IGNORECASE) or re.search(r"\[\d+\]$", text):
+                        is_mark = True
+                        
+                gap = b[1] - last_y1 if last_y1 > 0 else 0
+                
+                # If there's a huge gap (answering lines), stop grouping blocks.
+                if gap > 120 and current_q:
+                    current_q = None
+                    
+                if current_q:
+                    if (page_num, b) not in q_blocks[current_q]:
+                        q_blocks[current_q].append((page_num, b))
+                    if is_mark:
+                        current_q = None
+                        
+                if not is_image:
+                    last_y1 = max(last_y1, b[3])
+                else:
+                    last_y1 = max(last_y1, b[3])
         
-        # Capture images
-        for q_code, (page_num, y0, y1) in q_locations.items():
-            page = doc[page_num]
-            rect = fitz.Rect(0, y0, page.rect.width, y1)
+        # --- NEW: Shrink-Wrap Cropping ---
+        for q_code, b_list in q_blocks.items():
+            if not b_list: continue
+            
+            from collections import Counter
+            pages = [item[0] for item in b_list]
+            majority_page = Counter(pages).most_common(1)[0][0]
+            page_blocks = [item[1] for item in b_list if item[0] == majority_page]
+            
+            # Find the absolute min/max coordinates of the collected blocks
+            min_x = min(b[0] for b in page_blocks)
+            min_y = min(b[1] for b in page_blocks)
+            max_x = max(b[2] for b in page_blocks)
+            max_y = max(b[3] for b in page_blocks)
+            
+            pad = 12
+            page = doc[majority_page]
+            rect = fitz.Rect(max(0, min_x - pad), max(0, min_y - pad), min(page.rect.width, max_x + pad), min(page.rect.height, max_y + pad))
+            
             pix = page.get_pixmap(clip=rect, dpi=300)
             img_name = f"q_{q_code}.png"
             pix.save(img_name)
             
-            # White-space trimming
+            # Clean up edges purely for perfection
             try:
                 im = Image.open(img_name)
                 bg = Image.new(im.mode, im.size, (255, 255, 255))
                 diff = ImageChops.difference(im, bg)
                 bbox = diff.getbbox()
                 if bbox:
-                    pad = 20 # Increased pad slightly
-                    bbox = (max(0, bbox[0]-pad), max(0, bbox[1]-pad), min(im.size[0], bbox[2]+pad), min(im.size[1], bbox[3]+pad))
+                    pad2 = 10 
+                    bbox = (max(0, bbox[0]-pad2), max(0, bbox[1]-pad2), min(im.size[0], bbox[2]+pad2), min(im.size[1], bbox[3]+pad2))
                     im = im.crop(bbox)
                     im.save(img_name)
-            except Exception as e:
-                pass 
-                
+            except: pass
+            
             q_images[q_code] = img_name
             
     except Exception as e:
@@ -326,7 +344,7 @@ if preview_clicked:
         st.warning("Please upload all three files to see a preview.")
     else:
         try:
-            with st.spinner("Taking tight screenshots from PDF..."):
+            with st.spinner("Shrink-wrapping questions from PDF..."):
                 student_rows, percentage_row, full_marks_row, q_labels, dynamic_areas = process_data(uploaded_csv, uploaded_mapping)
                 q_images = generate_question_images_from_pdf(uploaded_pdf, q_labels, selected_font_size)
 
@@ -398,7 +416,7 @@ if generate_clicked:
         st.error("Please upload all three files (Marks, PDF, Mapping).")
     else:
         try:
-            with st.spinner(f'Auto-cropping PDF and generating files...'):
+            with st.spinner(f'Shrink-wrapping PDF and generating files...'):
                 logo_path = None
                 if uploaded_logo is not None:
                     logo_path = "temp_logo.png"
