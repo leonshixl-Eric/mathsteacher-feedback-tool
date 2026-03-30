@@ -228,10 +228,21 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     title = head.add_run(f"  {unit_title} Feedback: {name} | Class: {class_name}")
                     title.bold, title.font.size = True, Pt(14)
                     
+                    # Create Table and disable autofit
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
+                    table.autofit = False 
+                    table.allow_autofit = False
+                    
+                    # Set custom widths (Area = 9cm, WWW = 3.5cm, EBI = 3.5cm)
+                    col_widths = (Cm(9.0), Cm(3.5), Cm(3.5))
+                    
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "What Went Well", "Even Better If"
+                    
+                    # Apply widths to header cells
+                    for j, cell in enumerate(hdr):
+                        cell.width = col_widths[j]
                     
                     s_ebi = []
                     for t_name, idxs in dyn_areas:
@@ -245,6 +256,10 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                                 s_ebi.append(q_labels[idx])
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = t_name, ", ".join(w), ", ".join(e)
+                        
+                        # Apply widths to every new row cell
+                        for j, cell in enumerate(r):
+                            cell.width = col_widths[j]
 
                     reteach_qs = [q for q in s_ebi if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
                     personal_qs = [q for q in s_ebi if q not in reteach_qs]
@@ -254,7 +269,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         for q in personal_qs:
                             doc.add_paragraph().add_run(st.session_state.q_titles[q]).bold = True
                             img_data = BytesIO(st.session_state.saved_crops[q])
-                            # Sized down to 70% (9.8 cm)
                             doc.add_paragraph().add_run().add_picture(img_data, width=Cm(9.8))
 
                     doc.add_page_break()
@@ -263,7 +277,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         for q in reteach_qs:
                             doc.add_paragraph().add_run(st.session_state.q_titles[q]).bold = True
                             img_data = BytesIO(st.session_state.saved_crops[q])
-                            # Sized down to 70% (10.5 cm)
                             doc.add_paragraph().add_run().add_picture(img_data, width=Cm(10.5))
                     doc.add_page_break()
                     progress_bar.progress((i + 1) / len(students))
@@ -274,7 +287,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     txBox = slide.shapes.add_textbox(PptxCm(2), PptxCm(1), PptxCm(20), PptxCm(1.5))
                     txBox.text_frame.paragraphs[0].text = st.session_state.q_titles[q]
                     img_data = BytesIO(st.session_state.saved_crops[q])
-                    # Sized down to 70% (14.7 cm)
                     slide.shapes.add_picture(img_data, PptxCm(2), PptxCm(3), width=PptxCm(14.7))
 
                 word_buf, ppt_buf, zip_buf = BytesIO(), BytesIO(), BytesIO()
