@@ -58,11 +58,16 @@ threshold_decimal = selected_threshold / 100.0
 # --- 2. CORE FUNCTIONS ---
 def process_data(csv, mapping):
     df = pd.read_csv(csv, header=None) if csv.name.endswith('.csv') else pd.read_excel(csv, header=None)
-    row0, row1 = df.iloc[0].astype(str).tolist(), df.iloc[1].astype(str).tolist()
+    
+    # BULLETPROOF FIX: Force every item to be a strict string to prevent the 'float' strip error
+    row0 = [str(x) for x in df.iloc[0].tolist()]
+    row1 = [str(x) for x in df.iloc[1].tolist()]
+    
     q_labels = ["Surname", "Forename"]
     curr = ""
     for i in range(2, len(row0)):
-        r0, r1 = row0[i].strip(), row1[i].strip()
+        # Extra safety: cast to string again before stripping
+        r0, r1 = str(row0[i]).strip(), str(row1[i]).strip()
         if 'total' in r0.lower() or 'total' in r1.lower(): break
         if r0 != 'nan' and r0 != '':
             m = re.search(r'\d+', r0)
@@ -86,7 +91,7 @@ def process_data(csv, mapping):
         for cell in m_row.iloc[1:]:
             if pd.isna(cell): continue
             for t in str(cell).lower().replace('and', ',').replace('&', ',').split(','):
-                t = t.strip()
+                t = str(t).strip() # Extra safety wrapper here too
                 n, l = "".join([c for c in t if c.isdigit()]), "".join([c for c in t if c.isalpha()])
                 if n: last_n = n
                 cand = (n or last_n) + l
@@ -126,7 +131,7 @@ def scan_pdf_for_metadata(pdf_bytes, required_qs):
                     if q not in titles_dict:
                         pat = rf"^(?:Question\s+|Q)?0*{num}\s*[\.\-\)]?\s*([A-Za-z].*)"
                         for line in text.split('\n'):
-                            match = re.search(pat, line.strip(), re.IGNORECASE)
+                            match = re.search(pat, str(line).strip(), re.IGNORECASE)
                             if match:
                                 instr = match.group(1).strip()
                                 instr = re.sub(r'\s*\[\d+.*\]', '', instr, flags=re.IGNORECASE)
@@ -228,19 +233,17 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     title = head.add_run(f"  {unit_title} Feedback: {name} | Class: {class_name}")
                     title.bold, title.font.size = True, Pt(14)
                     
-                    # Create Table and disable autofit
+                    # Custom 60% Width Table Formatting
                     table = doc.add_table(rows=1, cols=3)
                     table.style = 'Table Grid'
                     table.autofit = False 
                     table.allow_autofit = False
                     
-                    # Set custom widths (Area = 9cm, WWW = 3.5cm, EBI = 3.5cm)
                     col_widths = (Cm(9.0), Cm(3.5), Cm(3.5))
                     
                     hdr = table.rows[0].cells
                     hdr[0].text, hdr[1].text, hdr[2].text = "Area", "What Went Well", "Even Better If"
                     
-                    # Apply widths to header cells
                     for j, cell in enumerate(hdr):
                         cell.width = col_widths[j]
                     
@@ -257,7 +260,6 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         r = table.add_row().cells
                         r[0].text, r[1].text, r[2].text = t_name, ", ".join(w), ", ".join(e)
                         
-                        # Apply widths to every new row cell
                         for j, cell in enumerate(r):
                             cell.width = col_widths[j]
 
