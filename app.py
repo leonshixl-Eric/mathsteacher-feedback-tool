@@ -51,7 +51,7 @@ st.sidebar.header("📝 Branding & Settings")
 unit_title = st.sidebar.text_input("Unit Title", value="Algebraic Manipulation")
 class_name = st.sidebar.text_input("Class Name", value="9y2")
 uploaded_logo = st.sidebar.file_uploader("Upload Logo", type=["png", "jpg"])
-selected_threshold = st.sidebar.slider("Reteach Threshold (%)", 0, 100, 55)
+selected_threshold = st.sidebar.slider("Auto-Reteach Threshold (%)", 0, 100, 55, help="Questions below this average will be automatically selected for reteaching.")
 page_margin = st.sidebar.slider("Page Margin (cm)", 0.5, 3.0, 1.3)
 threshold_decimal = selected_threshold / 100.0
 
@@ -59,14 +59,12 @@ threshold_decimal = selected_threshold / 100.0
 def process_data(csv, mapping):
     df = pd.read_csv(csv, header=None) if csv.name.endswith('.csv') else pd.read_excel(csv, header=None)
     
-    # BULLETPROOF FIX: Force every item to be a strict string to prevent the 'float' strip error
     row0 = [str(x) for x in df.iloc[0].tolist()]
     row1 = [str(x) for x in df.iloc[1].tolist()]
     
     q_labels = ["Surname", "Forename"]
     curr = ""
     for i in range(2, len(row0)):
-        # Extra safety: cast to string again before stripping
         r0, r1 = str(row0[i]).strip(), str(row1[i]).strip()
         if 'total' in r0.lower() or 'total' in r1.lower(): break
         if r0 != 'nan' and r0 != '':
@@ -91,7 +89,7 @@ def process_data(csv, mapping):
         for cell in m_row.iloc[1:]:
             if pd.isna(cell): continue
             for t in str(cell).lower().replace('and', ',').replace('&', ',').split(','):
-                t = str(t).strip() # Extra safety wrapper here too
+                t = str(t).strip() 
                 n, l = "".join([c for c in t if c.isdigit()]), "".join([c for c in t if c.isalpha()])
                 if n: last_n = n
                 cand = (n or last_n) + l
@@ -209,6 +207,21 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
             
             st.divider()
 
+        # --- NEW FEATURE: WHOLE-CLASS RETEACH OVERRIDE ---
+        st.markdown("### 🏫 Whole-Class Reteach Selection")
+        st.write("These questions will appear in the Teacher PowerPoint and the 'Reteach' section of student docs. The app has pre-selected questions below your threshold, but you can add/remove them as you see fit!")
+        
+        # Calculate defaults based on the slider
+        default_reteach = [q for q in req_qs if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
+        
+        # The Manual Override Box
+        selected_reteach = st.multiselect(
+            "Select questions for Whole-Class Reteach:",
+            options=req_qs,
+            default=default_reteach
+        )
+        st.markdown("<br>", unsafe_allow_html=True) # visual spacing
+
         if st.button("📦 Generate All Documents (Word & PPTX)", type="primary", use_container_width=True):
             if len(st.session_state.saved_crops) < len(req_qs):
                 st.error(f"Please click 'Save Crop' for all questions first! ({len(st.session_state.saved_crops)}/{len(req_qs)})")
@@ -263,8 +276,9 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                         for j, cell in enumerate(r):
                             cell.width = col_widths[j]
 
-                    reteach_qs = [q for q in s_ebi if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
-                    personal_qs = [q for q in s_ebi if q not in reteach_qs]
+                    # Use the USER'S selection instead of calculating it mathematically
+                    reteach_qs = [q for q in s_ebi if q in selected_reteach]
+                    personal_qs = [q for q in s_ebi if q not in selected_reteach]
                     
                     if personal_qs:
                         doc.add_heading("Personal correction", 2)
@@ -283,8 +297,8 @@ if uploaded_csv and uploaded_pdf and uploaded_mapping:
                     doc.add_page_break()
                     progress_bar.progress((i + 1) / len(students))
 
-                global_reteach = [q for q in q_labels[2:] if pd.to_numeric(perc_row[q_labels.index(q)], errors='coerce') <= threshold_decimal]
-                for q in global_reteach:
+                # PPTX GENERATION using the USER'S selection
+                for q in selected_reteach:
                     slide = prs.slides.add_slide(prs.slide_layouts[6])
                     txBox = slide.shapes.add_textbox(PptxCm(2), PptxCm(1), PptxCm(20), PptxCm(1.5))
                     txBox.text_frame.paragraphs[0].text = st.session_state.q_titles[q]
